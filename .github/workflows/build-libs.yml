@@ -336,6 +336,10 @@ jobs:
         with:
           cuda: ${{ env.CUDA_WINDOWS_VERSION }}
           method: network
+          # Disable the action's caching: with network installs it validates a
+          # cache path that doesn't exist and fails with "Path Validation Error".
+          use-github-cache: false
+          use-local-cache: false
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "cuda_profiler_api"]'
 
       - name: Clone upstream stable-diffusion.cpp @ pinned commit
