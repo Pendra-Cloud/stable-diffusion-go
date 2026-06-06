@@ -30,8 +30,12 @@ fi
 
 uname_s="$(uname -s)"
 case "$uname_s" in
+  # macOS BSD nm: -g external only, -U defined only.
   Darwin) nm_cmd=(nm -gU "$lib") ;;
-  *)      nm_cmd=(nm -D "$lib") ;;
+  # GNU nm: -D dynamic symbols, --defined-only drops undefined/imported entries
+  # (type U) so the gate inspects only true exports — an imported ggml_* (or a
+  # never-resolved sd_*) can't false-pass or false-leak.
+  *)      nm_cmd=(nm -D --defined-only "$lib") ;;
 esac
 
 # Exported symbol names, one per line, with any leading underscore (macOS

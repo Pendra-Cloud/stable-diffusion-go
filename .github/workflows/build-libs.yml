@@ -14,13 +14,15 @@ name: Build native libs
 #     ggml_* local. A fail-closed symbol gate asserts all expected symbols are
 #     present AND no ggml symbol leaked, before anything is published.
 #
-# Trigger: manual (workflow_dispatch) or pushing a `libs-*` tag.
+# Trigger: manual (workflow_dispatch) or pushing a `libs-*` tag. The
+# workflow_dispatch `only` input limits the run to a single variant id (for a
+# cheap gating run); the `setup` job below applies it to every job/matrix leg.
 
 on:
   workflow_dispatch:
     inputs:
       only:
-        description: "Limit to one variant id for a gating run (e.g. linux-amd64-cpu). Empty = full matrix."
+        description: "Limit to one variant id for a gating run (linux-amd64-cpu | linux-amd64-vulkan | linux-amd64-cuda | linux-arm64-cpu | darwin-arm64-metal | windows-amd64). Empty = full matrix."
         required: false
         default: ""
   push:
@@ -34,8 +36,8 @@ env:
   SD_UPSTREAM: leejet/stable-diffusion.cpp
   # CUDA toolkit version for the CUDA variants. The Turing→Blackwell arch list
   # below is valid for CUDA 13 (Pascal/Volta sm_61/sm_70 are dropped there). The
-  # Linux CUDA build runs inside the matching nvidia/cuda devel image (set in the
-  # matrix); Windows installs this version via the Jimver action.
+  # Linux CUDA build runs inside the matching nvidia/cuda devel image (the
+  # linux-cuda job's container); Windows installs this version via Jimver.
   CUDA_WINDOWS_VERSION: "13.0.0"
   CUDA_ARCHS: "75;80;86;89;90;100;120"
   VULKAN_SDK_VERSION: "1.4.328.1"
@@ -53,12 +55,20 @@ env:
     -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON
 
 jobs:
-  version:
+  # Compute the version pin and resolve which jobs/matrix legs run for this
+  # invocation (full matrix, or the single `only` variant for a gating run).
+  setup:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
       commit: ${{ steps.v.outputs.commit }}
       tag: ${{ steps.v.outputs.tag }}
+      linux_matrix: ${{ steps.m.outputs.linux_matrix }}
+      run_linux: ${{ steps.m.outputs.run_linux }}
+      run_cuda: ${{ steps.m.outputs.run_cuda }}
+      run_macos: ${{ steps.m.outputs.run_macos }}
+      run_windows: ${{ steps.m.outputs.run_windows }}
+      run_full: ${{ steps.m.outputs.run_full }}
     steps:
       - uses: actions/checkout@v4
       - id: v
@@ -70,74 +80,71 @@ jobs:
           echo "commit=$commit"   >> "$GITHUB_OUTPUT"
           echo "tag=libs-$version" >> "$GITHUB_OUTPUT"
           echo "Building upstream $SD_UPSTREAM @ $commit (pin: $version)"
+      - id: m
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -euo pipefail
+          # Host-runner Linux legs (CUDA runs in its own container job).
+          linux_all='[
+            {"id":"linux-amd64-cpu","runner":"ubuntu-22.04","arch":"amd64","proc":"cpu","flags":"-DGGML_NATIVE=OFF -DGGML_AVX2=ON"},
+            {"id":"linux-amd64-vulkan","runner":"ubuntu-22.04","arch":"amd64","proc":"vulkan","flags":"-DSD_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON"},
+            {"id":"linux-arm64-cpu","runner":"ubuntu-22.04-arm","arch":"arm64","proc":"cpu","flags":"-DGGML_NATIVE=OFF"}
+          ]'
+          if [ -n "${ONLY}" ]; then
+            linux_matrix="$(jq -c --arg only "$ONLY" '[.[] | select(.id==$only)]' <<<"$linux_all")"
+          else
+            linux_matrix="$(jq -c . <<<"$linux_all")"
+          fi
+          want() { [ -z "${ONLY}" ] || [ "${ONLY}" = "$1" ]; }
+          echo "linux_matrix=$linux_matrix" >> "$GITHUB_OUTPUT"
+          [ "$linux_matrix" != "[]" ] && echo "run_linux=true" >> "$GITHUB_OUTPUT" || echo "run_linux=false" >> "$GITHUB_OUTPUT"
+          want linux-amd64-cuda  && echo "run_cuda=true"    >> "$GITHUB_OUTPUT" || echo "run_cuda=false"    >> "$GITHUB_OUTPUT"
+          want darwin-arm64-metal && echo "run_macos=true"  >> "$GITHUB_OUTPUT" || echo "run_macos=false"  >> "$GITHUB_OUTPUT"
+          want windows-amd64     && echo "run_windows=true" >> "$GITHUB_OUTPUT" || echo "run_windows=false" >> "$GITHUB_OUTPUT"
+          [ -z "${ONLY}" ] && echo "run_full=true" >> "$GITHUB_OUTPUT" || echo "run_full=false" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
-  # Linux — one self-contained .so per (arch, processor). The binding's Unix
-  # loader opens a single libstable-diffusion.so from the lib dir (no per-CPU
-  # subdir selection — that's Windows-only), so the Linux CPU build targets an
-  # AVX2 baseline (ubiquitous on x86-64 servers); arm64 uses NEON defaults.
+  # Linux (host runners) — one self-contained .so per (arch, processor). The
+  # binding's Unix loader opens a single libstable-diffusion.so from the lib dir
+  # (no per-CPU subdir selection — that's Windows-only), so the Linux CPU build
+  # targets an AVX2 baseline (ubiquitous on x86-64 servers); arm64 uses NEON.
   # ---------------------------------------------------------------------------
   linux:
-    needs: version
+    needs: setup
+    if: ${{ needs.setup.outputs.run_linux == 'true' }}
     runs-on: ${{ matrix.runner }}
-    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - id: linux-amd64-cpu
-            runner: ubuntu-22.04
-            arch: amd64
-            proc: cpu
-            flags: "-DGGML_NATIVE=OFF -DGGML_AVX2=ON"
-          - id: linux-amd64-vulkan
-            runner: ubuntu-22.04
-            arch: amd64
-            proc: vulkan
-            flags: "-DSD_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON"
-          - id: linux-amd64-cuda
-            runner: ubuntu-22.04
-            container: nvidia/cuda:13.0.0-devel-ubuntu22.04
-            arch: amd64
-            proc: cuda
-            flags: "-DSD_CUDA=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON"
-          - id: linux-arm64-cpu
-            runner: ubuntu-22.04-arm
-            arch: arm64
-            proc: cpu
-            flags: "-DGGML_NATIVE=OFF"
+        include: ${{ fromJSON(needs.setup.outputs.linux_matrix) }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build tooling
         run: |
           set -euo pipefail
-          if command -v apt-get >/dev/null; then
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update
-            apt-get install -y --no-install-recommends \
-              build-essential cmake ninja-build git ca-certificates curl
-          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build git ca-certificates curl
 
       - name: Install Vulkan SDK
         if: matrix.proc == 'vulkan'
         run: |
           set -euo pipefail
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update
-          apt-get install -y --no-install-recommends wget gnupg ca-certificates
+          sudo apt-get install -y --no-install-recommends wget gnupg ca-certificates
           # The ggml Vulkan backend compiles shaders at build time with glslc,
           # which ships in the LunarG SDK (not in Ubuntu's libvulkan-dev). Pull
           # it from LunarG's apt repo (jammy = 22.04).
           wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
-            | tee /etc/apt/trusted.gpg.d/lunarg.asc >/dev/null
-          wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
+            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc >/dev/null
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
             https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
-          apt-get update
-          apt-get install -y --no-install-recommends vulkan-sdk
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends vulkan-sdk
 
       - name: Clone upstream stable-diffusion.cpp @ pinned commit
-        run: scripts/clone-upstream.sh "https://github.com/${SD_UPSTREAM}.git" "${{ needs.version.outputs.commit }}" upstream
+        run: scripts/clone-upstream.sh "https://github.com/${SD_UPSTREAM}.git" "${{ needs.setup.outputs.commit }}" upstream
 
       - name: Configure & build
         working-directory: upstream
@@ -162,9 +169,8 @@ jobs:
       - name: Package archive
         run: |
           set -euo pipefail
-          ver="${{ needs.version.outputs.version }}"
-          stage="stage"
-          mkdir -p "$stage"
+          ver="${{ needs.setup.outputs.version }}"
+          stage="stage"; mkdir -p "$stage"
           cp "${{ steps.lib.outputs.path }}" "$stage/"
           cp lib/stable-diffusion.cpp.txt lib/ggml.txt "$stage/" 2>/dev/null || true
           name="stable-diffusion-libs-linux-${{ matrix.arch }}-${{ matrix.proc }}-${ver}.tar.gz"
@@ -178,18 +184,72 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # Linux CUDA — built inside the matching CUDA devel image so the toolkit is
+  # present without a host install. Separate job (not a matrix leg) so no other
+  # leg inherits an empty `container:`.
+  # ---------------------------------------------------------------------------
+  linux-cuda:
+    needs: setup
+    if: ${{ needs.setup.outputs.run_cuda == 'true' }}
+    runs-on: ubuntu-22.04
+    container: nvidia/cuda:13.0.0-devel-ubuntu22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tooling
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build git ca-certificates curl
+      - name: Clone upstream stable-diffusion.cpp @ pinned commit
+        run: scripts/clone-upstream.sh "https://github.com/${SD_UPSTREAM}.git" "${{ needs.setup.outputs.commit }}" upstream
+      - name: Configure & build
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja $SD_BASE_FLAGS \
+            -DSD_CUDA=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHS}"
+          cmake --build build --config Release -j
+      - name: Locate library
+        id: lib
+        run: |
+          set -euo pipefail
+          so="$(find upstream/build -name 'libstable-diffusion.so' -print -quit)"
+          test -n "$so" || { echo "libstable-diffusion.so not found"; find upstream/build -name '*.so' | sed 's/^/  found: /'; exit 1; }
+          echo "path=$so" >> "$GITHUB_OUTPUT"
+      - name: Verify exported symbols (fail-closed)
+        run: scripts/check-symbols.sh "${{ steps.lib.outputs.path }}" lib/expected-symbols.txt
+      - name: Package archive
+        run: |
+          set -euo pipefail
+          ver="${{ needs.setup.outputs.version }}"
+          stage="stage"; mkdir -p "$stage"
+          cp "${{ steps.lib.outputs.path }}" "$stage/"
+          cp lib/stable-diffusion.cpp.txt lib/ggml.txt "$stage/" 2>/dev/null || true
+          name="stable-diffusion-libs-linux-amd64-cuda-${ver}.tar.gz"
+          tar -C "$stage" -czf "$name" .
+          echo "Packaged $name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64-cuda
+          path: stable-diffusion-libs-*.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # macOS — Apple Silicon, Metal. Self-contained dylib (ggml static).
   # ---------------------------------------------------------------------------
   macos:
-    needs: version
-    if: ${{ github.event.inputs.only == '' || startsWith(github.event.inputs.only, 'darwin') }}
+    needs: setup
+    if: ${{ needs.setup.outputs.run_macos == 'true' }}
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - name: Install build tooling
         run: brew install cmake ninja
       - name: Clone upstream stable-diffusion.cpp @ pinned commit
-        run: scripts/clone-upstream.sh "https://github.com/${SD_UPSTREAM}.git" "${{ needs.version.outputs.commit }}" upstream
+        run: scripts/clone-upstream.sh "https://github.com/${SD_UPSTREAM}.git" "${{ needs.setup.outputs.commit }}" upstream
       - name: Configure & build
         working-directory: upstream
         run: |
@@ -208,7 +268,7 @@ jobs:
       - name: Package archive
         run: |
           set -euo pipefail
-          ver="${{ needs.version.outputs.version }}"
+          ver="${{ needs.setup.outputs.version }}"
           stage="stage"; mkdir -p "$stage"
           cp "${{ steps.lib.outputs.path }}" "$stage/"
           cp lib/stable-diffusion.cpp.txt lib/ggml.txt "$stage/" 2>/dev/null || true
@@ -229,8 +289,8 @@ jobs:
   # host.
   # ---------------------------------------------------------------------------
   windows:
-    needs: version
-    if: ${{ github.event.inputs.only == '' || startsWith(github.event.inputs.only, 'windows') }}
+    needs: setup
+    if: ${{ needs.setup.outputs.run_windows == 'true' }}
     runs-on: windows-latest
     defaults:
       run:
@@ -259,7 +319,7 @@ jobs:
       - name: Clone upstream stable-diffusion.cpp @ pinned commit
         run: |
           $ErrorActionPreference = "Stop"
-          bash scripts/clone-upstream.sh "https://github.com/$env:SD_UPSTREAM.git" "${{ needs.version.outputs.commit }}" upstream
+          bash scripts/clone-upstream.sh "https://github.com/$env:SD_UPSTREAM.git" "${{ needs.setup.outputs.commit }}" upstream
 
       - name: Build all Windows variants
         run: |
@@ -312,7 +372,7 @@ jobs:
       - name: Package archive
         run: |
           $ErrorActionPreference = "Stop"
-          $ver = "${{ needs.version.outputs.version }}"
+          $ver = "${{ needs.setup.outputs.version }}"
           Copy-Item lib/stable-diffusion.cpp.txt,lib/ggml.txt stage/ -ErrorAction SilentlyContinue
           $name = "stable-diffusion-libs-windows-amd64-$ver.tar.gz"
           tar -C stage -czf $name .
@@ -326,12 +386,18 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Release — gather every archive, write checksums, attach to the GitHub
-  # Release tagged with the pin. Idempotent so re-running a dispatch refreshes
+  # Release tagged with the pin. Runs only for a FULL build (not a gating run),
+  # and only when every build job succeeded. Idempotent so a re-run refreshes
   # the assets in place.
   # ---------------------------------------------------------------------------
   release:
-    needs: [version, linux, macos, windows]
-    if: ${{ always() && github.event.inputs.only == '' && needs.linux.result == 'success' && needs.macos.result == 'success' && needs.windows.result == 'success' }}
+    needs: [setup, linux, linux-cuda, macos, windows]
+    if: >-
+      ${{ always() && needs.setup.outputs.run_full == 'true'
+          && needs.linux.result == 'success'
+          && needs.linux-cuda.result == 'success'
+          && needs.macos.result == 'success'
+          && needs.windows.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -349,9 +415,9 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.version.outputs.tag }}
-          VERSION: ${{ needs.version.outputs.version }}
-          COMMIT: ${{ needs.version.outputs.commit }}
+          TAG: ${{ needs.setup.outputs.tag }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          COMMIT: ${{ needs.setup.outputs.commit }}
         run: |
           set -euo pipefail
           notes="Prebuilt stable-diffusion.cpp native libraries for ${SD_UPSTREAM} @ ${COMMIT} (pin: ${VERSION}).
