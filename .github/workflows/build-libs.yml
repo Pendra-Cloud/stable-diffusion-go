@@ -52,7 +52,6 @@ env:
   # linux-cuda job's container); Windows installs this version via Jimver.
   CUDA_WINDOWS_VERSION: "13.0.0"
   CUDA_ARCHS: "75;80;86;89;90;100;120"
-  VULKAN_SDK_VERSION: "1.4.328.1"
   # Shared base flags for every variant. Hidden visibility + static ggml is the
   # isolation mechanism; SD_API (default visibility) re-exports only sd_*.
   SD_BASE_FLAGS: >-
@@ -205,6 +204,11 @@ jobs:
     if: ${{ needs.setup.outputs.run_cuda == 'true' }}
     runs-on: ubuntu-22.04
     container: nvidia/cuda:13.0.0-devel-ubuntu22.04
+    # Inside a container the default step shell is `sh` (dash), which lacks
+    # `set -o pipefail`; force bash (present in the ubuntu-based CUDA image).
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - name: Install build tooling
@@ -315,10 +319,14 @@ jobs:
       - name: Install Vulkan SDK
         run: |
           $ErrorActionPreference = "Stop"
-          $url = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/VulkanSDK-$env:VULKAN_SDK_VERSION-Installer.exe"
+          # Resolve the latest published Windows SDK version rather than pinning a
+          # string that may not exist for Windows (a hardcoded version 404s).
+          $ver = (Invoke-WebRequest -Uri "https://vulkan.lunarg.com/sdk/latest/windows.txt" -UseBasicParsing).Content.Trim()
+          Write-Host "Latest Vulkan SDK for Windows: $ver"
+          $url = "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe"
           Invoke-WebRequest -Uri $url -OutFile vulkan-installer.exe
           Start-Process -FilePath .\vulkan-installer.exe -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install" -Wait
-          "VULKAN_SDK=C:\VulkanSDK\$env:VULKAN_SDK_VERSION" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VULKAN_SDK=C:\VulkanSDK\$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Install CUDA toolkit
         uses: Jimver/cuda-toolkit@v0.2.27
