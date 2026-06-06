@@ -2,12 +2,19 @@ package main
 
 import (
 	"fmt"
-	stablediffusion "github.com/orangelang/stable-diffusion-go"
+	stablediffusion "github.com/Pendra-Cloud/stable-diffusion-go"
 )
 
 func main() {
 	fmt.Println("Stable Diffusion Go - Text to Video Example")
 	fmt.Println("================================================")
+
+	// Load the native library before use. Pass the directory that holds the
+	// shared library, or "" to use the OS default search path.
+	if err := stablediffusion.Load(""); err != nil {
+		fmt.Println("Failed to load stable-diffusion library:", err)
+		return
+	}
 
 	sd, err := stablediffusion.NewStableDiffusion(&stablediffusion.ContextParams{
 		DiffusionModelPath: "D:\\hf-mirror\\wan2.1\\wan2.1_t2v_1.3B_bf16.safetensors",

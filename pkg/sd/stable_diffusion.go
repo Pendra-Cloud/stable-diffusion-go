@@ -1,13 +1,7 @@
 package sd
 
 import (
-	"fmt"
-	"os"
-	"runtime"
-	"strings"
 	"unsafe"
-
-	"github.com/ebitengine/purego"
 )
 
 // Define enum types
@@ -383,116 +377,8 @@ var (
 	sdVersion                func() *uint8
 )
 
-// Dynamic library handle
-var libSD uintptr
-
-// Load dynamic library
-func init() {
-	// Define dynamic library filename and path
-	var libDir string
-	var libPath string
-	var err error
-	var gpuName string
-
-	switch runtime.GOOS {
-	case "windows":
-		// Determine the best library directory based on CPU architecture and GPU type
-		if strings.ToLower(os.Getenv("SD_VK_DEVICE")) == "true" {
-			var vulkanGPU string
-			vulkanGPU, err = GetVulkanGPU()
-			if err != nil || vulkanGPU == "" {
-				fmt.Println("Warning: Failed to get Vulkan GPU")
-				return
-			}
-
-			libPath = GetSDLibPath("vulkan/stable-diffusion.dll")
-			libSD, err = openLibrary(libPath)
-
-		} else {
-			gpuName, err = GetGPUName()
-			if err != nil {
-				fmt.Println("Warning: Failed to get GPU name: " + err.Error())
-				return
-			}
-
-			if gpuName == "NVIDIA" {
-				libPath = GetSDLibPath("cuda12/stable-diffusion.dll")
-				libSD, err = openLibrary(libPath)
-			} else if gpuName == "AMD" {
-				libPath = GetSDLibPath("rocm/stable-diffusion.dll")
-				libSD, err = openLibrary(libPath)
-			}
-		}
-
-		if err != nil {
-			fmt.Println("Warning: Failed to load stable-diffusion library from path: " + libPath)
-			fmt.Println("Trying to load from GPU accelerated library failed, trying to load from CPU library")
-			libDir = GetCpuAVX()
-			libPath = GetSDLibPath(libDir + "/stable-diffusion.dll")
-			libSD, err = openLibrary(libPath)
-		}
-
-	case "darwin":
-		libPath = GetSDLibPath("libstable-diffusion.dylib")
-		libSD, err = openLibrary(libPath)
-	default: // linux
-		libPath = GetSDLibPath("libstable-diffusion.so")
-		libSD, err = openLibrary(libPath)
-	}
-
-	if err != nil || libSD == 0 {
-		fmt.Println("Warning: Failed to load stable-diffusion library from path: " + libPath)
-		fmt.Println(err)
-		return
-	}
-
-	fmt.Println("Loaded stable-diffusion library: " + libPath)
-
-	// Bind functions
-	purego.RegisterLibFunc(&sdSetLogCallback, libSD, "sd_set_log_callback")
-	purego.RegisterLibFunc(&sdSetProgressCallback, libSD, "sd_set_progress_callback")
-	purego.RegisterLibFunc(&sdSetPreviewCallback, libSD, "sd_set_preview_callback")
-	purego.RegisterLibFunc(&sdGetNumPhysicalCores, libSD, "sd_get_num_physical_cores")
-	purego.RegisterLibFunc(&sdGetSystemInfo, libSD, "sd_get_system_info")
-	purego.RegisterLibFunc(&sdTypeName, libSD, "sd_type_name")
-	purego.RegisterLibFunc(&strToSDType, libSD, "str_to_sd_type")
-	purego.RegisterLibFunc(&sdRngTypeName, libSD, "sd_rng_type_name")
-	purego.RegisterLibFunc(&strToRngType, libSD, "str_to_rng_type")
-	purego.RegisterLibFunc(&sdSampleMethodName, libSD, "sd_sample_method_name")
-	purego.RegisterLibFunc(&strToSampleMethod, libSD, "str_to_sample_method")
-	purego.RegisterLibFunc(&sdSchedulerName, libSD, "sd_scheduler_name")
-	purego.RegisterLibFunc(&strToScheduler, libSD, "str_to_scheduler")
-	purego.RegisterLibFunc(&sdPredictionName, libSD, "sd_prediction_name")
-	purego.RegisterLibFunc(&strToPrediction, libSD, "str_to_prediction")
-	purego.RegisterLibFunc(&sdPreviewName, libSD, "sd_preview_name")
-	purego.RegisterLibFunc(&strToPreview, libSD, "str_to_preview")
-	purego.RegisterLibFunc(&sdLoraApplyModeName, libSD, "sd_lora_apply_mode_name")
-	purego.RegisterLibFunc(&strToLoraApplyMode, libSD, "str_to_lora_apply_mode")
-	purego.RegisterLibFunc(&sdCacheParamsInit, libSD, "sd_cache_params_init")
-	purego.RegisterLibFunc(&sdContextParamsInit, libSD, "sd_ctx_params_init")
-	purego.RegisterLibFunc(&sdContextParamsToStr, libSD, "sd_ctx_params_to_str")
-	purego.RegisterLibFunc(&newSDContext, libSD, "new_sd_ctx")
-	purego.RegisterLibFunc(&freeSDContext, libSD, "free_sd_ctx")
-	purego.RegisterLibFunc(&sdSampleParamsInit, libSD, "sd_sample_params_init")
-	purego.RegisterLibFunc(&sdSampleParamsToStr, libSD, "sd_sample_params_to_str")
-	purego.RegisterLibFunc(&sdGetDefaultSampleMethod, libSD, "sd_get_default_sample_method")
-	purego.RegisterLibFunc(&sdGetDefaultScheduler, libSD, "sd_get_default_scheduler")
-	purego.RegisterLibFunc(&sdImgGenParamsInit, libSD, "sd_img_gen_params_init")
-	purego.RegisterLibFunc(&sdImgGenParamsToStr, libSD, "sd_img_gen_params_to_str")
-	purego.RegisterLibFunc(&generateImage, libSD, "generate_image")
-	purego.RegisterLibFunc(&sdVidGenParamsInit, libSD, "sd_vid_gen_params_init")
-	purego.RegisterLibFunc(&generateVideo, libSD, "generate_video")
-	purego.RegisterLibFunc(&newUpscalerContext, libSD, "new_upscaler_ctx")
-	purego.RegisterLibFunc(&freeUpscalerContext, libSD, "free_upscaler_ctx")
-	purego.RegisterLibFunc(&upscale, libSD, "upscale")
-	purego.RegisterLibFunc(&getUpscaleFactor, libSD, "get_upscale_factor")
-	purego.RegisterLibFunc(&convert, libSD, "convert")
-	purego.RegisterLibFunc(&preprocessCanny, libSD, "preprocess_canny")
-	purego.RegisterLibFunc(&sdCommit, libSD, "sd_commit")
-	purego.RegisterLibFunc(&sdVersion, libSD, "sd_version")
-
-	fmt.Println("Register lib func finish !")
-}
+// The shared library is loaded lazily via Load (see load.go); importing this
+// package performs no filesystem access and no dlopen.
 
 // Wrapper functions
 type SDLogLevelType int32

@@ -62,7 +62,7 @@ Note: All dynamic link library files in the lib directory need to be downloaded 
 ### 1. Install Dependencies
 
 ```bash
-go get github.com/orangelang/stable-diffusion-go
+go get github.com/Pendra-Cloud/stable-diffusion-go
 ```
 
 ### 2. Prepare Model Files
@@ -86,7 +86,24 @@ The project includes precompiled dynamic libraries for multiple platforms, locat
 - **Linux**: `libstable-diffusion.so`
 - **macOS**: `libstable-diffusion.dylib`
 
-The program automatically selects the appropriate dynamic library based on the current environment, no manual specification required.
+The caller controls where and when the shared library is loaded. Call `Load`
+once before creating a context or generating:
+
+```go
+// Load from a caller-supplied directory (e.g. where the worker ships its libs).
+if err := stablediffusion.Load("/usr/lib/pendra"); err != nil {
+	// The native lib is absent or incompatible — handle/skip the backend.
+	// Load returns an error and never panics.
+}
+
+// Or pass an empty dir to fall back to the OS default library search path.
+err := stablediffusion.Load("")
+```
+
+`Load` is lazy and idempotent: importing the package performs no filesystem
+access and no `dlopen`. On Windows, the GPU/CPU variant subdirectories
+(`cuda12/`, `rocm/`, `vulkan/`, `avx2/`, …) are resolved within the supplied
+directory.
 
 ### 4. Run Examples
 
@@ -107,7 +124,7 @@ package main
 
 import (
 	"fmt"
-	stablediffusion "github.com/orangelang/stable-diffusion-go"
+	stablediffusion "github.com/Pendra-Cloud/stable-diffusion-go"
 )
 
 func main() {
@@ -259,7 +276,7 @@ ctxParams := &stablediffusion.ContextParams{
 
 ## ⚠️ Notes
 
-1. **Dynamic Library Path**: The program automatically selects the appropriate dynamic library from the `pkg/sd/lib/` directory and current environment
+1. **Dynamic Library Path**: The caller supplies the library directory via `Load(libDir)`; an empty `libDir` falls back to the OS default library search path
 2. **Model Compatibility**: Ensure using model formats compatible with stable-diffusion.cpp
 3. **Dependencies**: Install dependencies like CUDA or Vulkan as needed
 4. **Video Generation**: Requires FFmpeg for video encoding
@@ -276,7 +293,7 @@ package main
 
 import (
 	"fmt"
-	stablediffusion "github.com/orangelang/stable-diffusion-go"
+	stablediffusion "github.com/Pendra-Cloud/stable-diffusion-go"
 )
 
 func main() {
@@ -318,7 +335,7 @@ package main
 
 import (
 	"fmt"
-	stablediffusion "github.com/orangelang/stable-diffusion-go"
+	stablediffusion "github.com/Pendra-Cloud/stable-diffusion-go"
 )
 
 func main() {
