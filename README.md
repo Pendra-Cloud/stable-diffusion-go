@@ -25,21 +25,44 @@ go get github.com/Pendra-Cloud/stable-diffusion-go
 ## The native library
 
 This repository contains **only the Go binding** — the native shared library is
-not committed. Obtain (or build) the `stable-diffusion.cpp` library that matches
-the version pinned in [`lib/version.txt`](lib/version.txt) (currently
-`master-453-4ff2c8c`) from the
-[stable-diffusion.cpp releases](https://github.com/leejet/stable-diffusion.cpp/releases),
-and place it where your program can load it:
+not committed. The library is built from the upstream commit pinned in
+[`lib/version.txt`](lib/version.txt) (currently `master-453-4ff2c8c`).
+
+### Prebuilt archives
+
+Per-variant archives are built and published from this repository's
+[Releases](https://github.com/Pendra-Cloud/stable-diffusion-go/releases) by the
+[`build-libs.yml`](.github/workflows/build-libs.yml) workflow (upstream ships no
+prebuilt release covering these variants). Download the one matching your host,
+extract it into a directory, and pass that directory to `Load`:
+
+```
+stable-diffusion-libs-linux-amd64-cpu-<version>.tar.gz      # also -cuda, -vulkan
+stable-diffusion-libs-linux-arm64-cpu-<version>.tar.gz
+stable-diffusion-libs-darwin-arm64-metal-<version>.tar.gz
+stable-diffusion-libs-windows-amd64-<version>.tar.gz        # carries the subdir tree
+```
+
+Each archive ships a **single self-contained library** (ggml is statically
+linked, with hidden visibility so only the `stable-diffusion.cpp` symbols are
+exported and the embedded `ggml` symbols stay local — they won't collide with
+another in-process library that has its own `ggml`). The Windows archive
+contains the GPU/CPU variant subdirectories the loader selects from
+(`cuda12/`, `vulkan/`, `avx2/`, …); extract it whole and point `Load` at its
+root. CUDA archives need the host CUDA runtime; Vulkan archives need a Vulkan
+loader/ICD.
 
 | Platform | Library file |
 | --- | --- |
 | Linux | `libstable-diffusion.so` |
 | macOS | `libstable-diffusion.dylib` |
-| Windows | `stable-diffusion.dll` |
+| Windows | `stable-diffusion.dll` (under a variant subdir) |
 
-The binding registers the full `stable-diffusion.cpp` symbol set, so the library
-must export all of them — keep the library version in lockstep with
-`lib/version.txt`.
+To build it yourself instead, compile `stable-diffusion.cpp` at the pinned
+commit with `-DSD_BUILD_SHARED_LIBS=ON`. The binding registers the full
+`stable-diffusion.cpp` symbol set ([`lib/expected-symbols.txt`](lib/expected-symbols.txt)),
+so the library must export all of them — keep the library version in lockstep
+with `lib/version.txt`.
 
 ## Loading the library
 
