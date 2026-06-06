@@ -86,11 +86,16 @@ func Load(libDir string) (err error) {
 	}
 
 	// purego.RegisterLibFunc panics when a symbol is missing; convert any panic
-	// across the FFI boundary into an error so the caller never crashes.
+	// across the FFI boundary into an error so the caller never crashes. Close
+	// the handle we opened so it isn't leaked (and the DLL isn't left locked on
+	// Windows) when symbol registration fails partway through.
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("stable-diffusion: failed to load library: %v", r)
+			if libSD != 0 {
+				_ = closeLibrary(libSD)
+			}
 			libSD = 0
+			err = fmt.Errorf("stable-diffusion: failed to load library: %v", r)
 		}
 	}()
 

@@ -97,7 +97,9 @@ if err := stablediffusion.Load("/usr/lib/pendra"); err != nil {
 }
 
 // Or pass an empty dir to fall back to the OS default library search path.
-err := stablediffusion.Load("")
+if err := stablediffusion.Load(""); err != nil {
+	log.Fatal(err)
+}
 ```
 
 `Load` is lazy and idempotent: importing the package performs no filesystem
