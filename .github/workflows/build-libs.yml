@@ -323,7 +323,9 @@ jobs:
           # string that may not exist for Windows (a hardcoded version 404s).
           $ver = (Invoke-WebRequest -Uri "https://vulkan.lunarg.com/sdk/latest/windows.txt").Content.Trim()
           Write-Host "Latest Vulkan SDK for Windows: $ver"
-          $url = "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe"
+          # LunarG's Windows installer is named vulkansdk-windows-X64-<ver>.exe
+          # (the old VulkanSDK-<ver>-Installer.exe name 404s).
+          $url = "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkansdk-windows-X64-$ver.exe"
           Invoke-WebRequest -Uri $url -OutFile vulkan-installer.exe
           Start-Process -FilePath .\vulkan-installer.exe -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install" -Wait
           "VULKAN_SDK=C:\VulkanSDK\$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
