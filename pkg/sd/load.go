@@ -120,6 +120,7 @@ func Load(libDir string) (err error) {
 
 	libSD = handle
 	registerFunctions()
+	bindCFree() // best-effort; FreeImage/FreeImages no-op if this fails
 
 	loaded = true
 	return nil
