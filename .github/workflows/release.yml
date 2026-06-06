@@ -1,0 +1,128 @@
+name: Release on merge to main
+
+# Increments the project's release version on every merge into main and
+# publishes the corresponding git tag + GitHub Release.
+#
+# Versioning is semantic (vMAJOR.MINOR.PATCH) and is driven entirely by git
+# tags / GitHub Releases. This is the library's *own* version and is unrelated
+# to lib/version.txt, which pins the upstream stable-diffusion.cpp build.
+#
+# Bump selection (highest match wins):
+#   * major  -> PR label "release:major" OR "#major" in the merge commit message
+#   * minor  -> PR label "release:minor" OR "#minor" in the merge commit message
+#   * patch  -> anything else (the default)
+# Skip a release for a given merge with the "release:skip" label or "[skip release]"
+# / "#norelease" in the merge commit message.
+
+on:
+  push:
+    branches: [main]
+
+# Avoid two concurrent merges racing to create the same tag.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write       # create tags and releases
+  pull-requests: read   # read labels on the merged PR
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # full history so tags are available
+          fetch-tags: true
+
+      - name: Compute next version
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # --- Latest existing semver tag ---
+          # Match only strict vMAJOR.MINOR.PATCH tags; git's glob is too loose
+          # (it would also accept e.g. v1.2.3-rc1 or v1.2.3.4), so post-filter
+          # with an anchored regex before picking the newest.
+          latest="$(git tag -l --sort=-v:refname \
+                      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+          if [ -z "$latest" ]; then
+            latest="v0.0.0"
+            has_previous="false"
+            echo "No existing semver tag found; starting from $latest"
+          else
+            has_previous="true"
+            echo "Latest tag: $latest"
+          fi
+
+          # --- Gather signals: merge commit message + PR labels ---
+          commit_msg="$(git log -1 --pretty=%B "${GITHUB_SHA}")"
+          labels="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+                      --jq '.[].labels[].name' 2>/dev/null || true)"
+          echo "Merge commit message:"; echo "$commit_msg"
+          echo "PR labels: ${labels:-<none>}"
+
+          has() { printf '%s\n' "$1" | grep -qiF "$2"; }
+
+          # --- Skip? ---
+          if has "$labels" "release:skip" || has "$commit_msg" "[skip release]" || has "$commit_msg" "#norelease"; then
+            echo "Release skip requested; no version bump."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # --- Determine bump level (highest wins) ---
+          if has "$labels" "release:major" || has "$commit_msg" "#major"; then
+            bump="major"
+          elif has "$labels" "release:minor" || has "$commit_msg" "#minor"; then
+            bump="minor"
+          else
+            bump="patch"
+          fi
+          echo "Bump level: $bump"
+
+          # --- Compute next version ---
+          ver="${latest#v}"
+          IFS='.' read -r major minor patch <<< "$ver"
+          case "$bump" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          next="v${major}.${minor}.${patch}"
+          echo "Next version: $next"
+
+          if git rev-parse -q --verify "refs/tags/${next}" >/dev/null; then
+            echo "Tag ${next} already exists; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "previous=$latest" >> "$GITHUB_OUTPUT"
+          echo "has_previous=$has_previous" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag and GitHub Release
+        if: steps.version.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PREVIOUS: ${{ steps.version.outputs.previous }}
+          HAS_PREVIOUS: ${{ steps.version.outputs.has_previous }}
+        run: |
+          set -euo pipefail
+          # Tag the merge commit and let GitHub generate release notes from the
+          # commits/PRs since the previous tag.
+          args=(--target "${GITHUB_SHA}" --title "$VERSION" --generate-notes)
+          # Only anchor notes to the previous tag when one actually exists;
+          # passing a non-existent tag (e.g. the v0.0.0 default) would fail.
+          if [ "$HAS_PREVIOUS" = "true" ]; then
+            args+=(--notes-start-tag "$PREVIOUS")
+          fi
+          gh release create "$VERSION" "${args[@]}"
+          echo "Published release $VERSION"
