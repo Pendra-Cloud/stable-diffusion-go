@@ -380,7 +380,7 @@ jobs:
               if ($exports -notcontains $sym) { Write-Host "MISSING export: $sym in $dll"; $fail = $true }
             }
             $leaked = $exports | Where-Object { $_ -like 'ggml_*' }
-            if ($leaked) { Write-Host "LEAKED ggml symbols in $dll:"; $leaked | ForEach-Object { Write-Host "  $_" }; $fail = $true }
+            if ($leaked) { Write-Host "LEAKED ggml symbols in ${dll}:"; $leaked | ForEach-Object { Write-Host "  $_" }; $fail = $true }
           }
           if ($fail) { throw "Windows symbol verification FAILED" }
           Write-Host "Windows symbol verification OK"
