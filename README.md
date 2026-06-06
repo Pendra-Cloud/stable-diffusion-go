@@ -48,9 +48,10 @@ linked, with hidden visibility so only the `stable-diffusion.cpp` symbols are
 exported and the embedded `ggml` symbols stay local — they won't collide with
 another in-process library that has its own `ggml`). The Windows archive
 contains the GPU/CPU variant subdirectories the loader selects from
-(`cuda12/`, `vulkan/`, `avx2/`, …); extract it whole and point `Load` at its
-root. CUDA archives need the host CUDA runtime; Vulkan archives need a Vulkan
-loader/ICD.
+(`avx2/`, `avx512/`, `avx/`, `noavx/`, `vulkan/`); extract it whole and point
+`Load` at its root. (A Windows `cuda12/` build isn't produced yet — NVIDIA
+users on Windows can use the `vulkan/` variant.) The Linux CUDA archive needs a
+host CUDA runtime; Vulkan archives need a Vulkan loader/ICD.
 
 | Platform | Library file |
 | --- | --- |
