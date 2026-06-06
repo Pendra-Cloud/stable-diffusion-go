@@ -46,11 +46,14 @@ permissions:
 
 env:
   SD_UPSTREAM: leejet/stable-diffusion.cpp
-  # CUDA toolkit version for the CUDA variants. The Turing→Blackwell arch list
-  # below is valid for CUDA 13 (Pascal/Volta sm_61/sm_70 are dropped there). The
-  # Linux CUDA build runs inside the matching nvidia/cuda devel image (the
-  # linux-cuda job's container); Windows installs this version via Jimver.
-  CUDA_WINDOWS_VERSION: "13.0.0"
+  # Windows CUDA toolkit version, installed via the Jimver action. Kept on the
+  # 12.9 line because CUDA 13's Windows *network* packages aren't reliably
+  # resolvable by the action ("no files in tool cache"); 12.8+ still covers the
+  # full Turing→Blackwell arch list below (sm_100/sm_120 landed in 12.8). The
+  # Linux CUDA build is independent — it runs inside the nvidia/cuda:13.0.0
+  # devel image (the linux-cuda job's container).
+  CUDA_WINDOWS_VERSION: "12.9.1"
+  # Turing→Blackwell. Pascal/Volta (sm_61/sm_70) are intentionally dropped.
   CUDA_ARCHS: "75;80;86;89;90;100;120"
   # Shared base flags for every variant. Hidden visibility + static ggml is the
   # isolation mechanism; SD_API (default visibility) re-exports only sd_*.
