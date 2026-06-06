@@ -46,8 +46,12 @@ permissions:
 
 env:
   SD_UPSTREAM: leejet/stable-diffusion.cpp
-  # Turing→Blackwell, used by the Linux CUDA build. Pascal/Volta (sm_61/sm_70)
-  # are intentionally dropped (valid for CUDA 13, the linux-cuda container).
+  # Windows CUDA toolkit version, installed via the Jimver action (pinned to a
+  # recent release whose version map resolves current CUDA network packages).
+  # 12.8+ covers the full Turing→Blackwell arch list (sm_100/sm_120). The Linux
+  # CUDA build is independent (nvidia/cuda:13.0.0 devel container).
+  CUDA_WINDOWS_VERSION: "12.9.1"
+  # Turing→Blackwell. Pascal/Volta (sm_61/sm_70) are intentionally dropped.
   CUDA_ARCHS: "75;80;86;89;90;100;120"
   # Shared base flags for every variant. Hidden visibility + static ggml is the
   # isolation mechanism; SD_API (default visibility) re-exports only sd_*.
@@ -296,10 +300,10 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Windows — the binding selects a per-variant SUBDIR within the lib dir
-  # (avx512/ avx2/ avx/ noavx/ for CPU, vulkan/ for GPU; see windowsLibCandidates
-  # in pkg/sd/load.go). So we build every variant and ship ONE archive carrying
-  # that subdir tree; a single lib dir then satisfies any host. (cuda12/ is not
-  # produced yet — see the CUDA note in the steps below.)
+  # (avx512/ avx2/ avx/ noavx/ for CPU, cuda12/ vulkan/ for GPU; see
+  # windowsLibCandidates in pkg/sd/load.go). So we build every variant and ship
+  # ONE archive carrying that subdir tree; a single lib dir then satisfies any
+  # host.
   # ---------------------------------------------------------------------------
   windows:
     needs: setup
@@ -327,11 +331,17 @@ jobs:
           Start-Process -FilePath .\vulkan-installer.exe -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install" -Wait
           "VULKAN_SDK=C:\VulkanSDK\$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      # NOTE: Windows CUDA is not built yet — the Jimver cuda-toolkit action
-      # can't resolve recent CUDA Windows network packages on this runner
-      # ("no files in tool cache"). Windows ships CPU (avx2/avx512/avx/noavx) +
-      # Vulkan; NVIDIA users on Windows are covered by the Vulkan build until a
-      # reliable CUDA-install path is wired in. Linux CUDA is unaffected.
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.35
+        id: cuda
+        with:
+          cuda: ${{ env.CUDA_WINDOWS_VERSION }}
+          method: network
+          # The action validates a non-existent cache path on network installs
+          # and aborts with "Path Validation Error" unless caching is disabled.
+          use-github-cache: false
+          use-local-cache: false
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "cuda_profiler_api"]'
 
       - name: Clone upstream stable-diffusion.cpp @ pinned commit
         run: |
@@ -349,6 +359,7 @@ jobs:
             "avx"     = "-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF";
             "noavx"   = "-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF";
             "vulkan"  = "-DSD_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON";
+            "cuda12"  = "-DSD_CUDA=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON";
           }
           New-Item -ItemType Directory -Force -Path stage | Out-Null
           foreach ($name in $variants.Keys) {
@@ -444,8 +455,8 @@ jobs:
 
           CUDA archives require a matching host CUDA runtime; Vulkan archives
           require a Vulkan loader/ICD on the host. The Windows archive carries
-          the per-CPU/GPU (avx2/avx512/avx/noavx/vulkan) subdir tree the binding
-          selects from."
+          the per-CPU/GPU (avx2/avx512/avx/noavx/vulkan/cuda12) subdir tree the
+          binding selects from."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/stable-diffusion-libs-*.tar.gz dist/checksums.txt --clobber
           else
