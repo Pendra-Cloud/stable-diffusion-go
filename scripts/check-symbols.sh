@@ -55,8 +55,13 @@ done < "$expected"
 # bracket the Metal shader blob embedded into the macOS build. They carry no
 # ggml compute API, and macOS's two-level namespace binds each dylib's
 # references to its own copy, so they can't cross-bind with another in-process
-# ggml. Treat them as benign; still fail on any real ggml_* API leak.
-leaked="$(printf '%s\n' "$exported" | grep -E '^ggml_' | grep -Ev '^ggml_metallib_(start|end)$' || true)"
+# ggml. Allow them ONLY on Darwin (they can't legitimately appear on Linux, so
+# the gate stays maximally strict there); still fail on any real ggml_* leak.
+if [ "$uname_s" = "Darwin" ]; then
+  leaked="$(printf '%s\n' "$exported" | grep -E '^ggml_' | grep -Ev '^ggml_metallib_(start|end)$' || true)"
+else
+  leaked="$(printf '%s\n' "$exported" | grep -E '^ggml_' || true)"
+fi
 leak_count=0
 if [ -n "$leaked" ]; then
   leak_count="$(printf '%s\n' "$leaked" | wc -l | tr -d ' ')"

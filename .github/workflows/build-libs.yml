@@ -321,7 +321,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           # Resolve the latest published Windows SDK version rather than pinning a
           # string that may not exist for Windows (a hardcoded version 404s).
-          $ver = (Invoke-WebRequest -Uri "https://vulkan.lunarg.com/sdk/latest/windows.txt" -UseBasicParsing).Content.Trim()
+          $ver = (Invoke-WebRequest -Uri "https://vulkan.lunarg.com/sdk/latest/windows.txt").Content.Trim()
           Write-Host "Latest Vulkan SDK for Windows: $ver"
           $url = "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe"
           Invoke-WebRequest -Uri $url -OutFile vulkan-installer.exe
