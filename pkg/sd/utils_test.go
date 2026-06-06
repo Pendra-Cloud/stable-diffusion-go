@@ -65,3 +65,16 @@ func TestEncodePNGNilReturnsError(t *testing.T) {
 		t.Fatal("EncodePNG with nil Data = nil error, want error")
 	}
 }
+
+// Malformed inputs must return an error rather than panicking (out-of-range
+// indexing): too few channels, or zero dimensions.
+func TestEncodePNGMalformedReturnsError(t *testing.T) {
+	data := make([]uint8, 4)
+
+	if _, err := EncodePNG(&SDImage{Width: 2, Height: 2, Channel: 1, Data: &data[0]}); err == nil {
+		t.Fatal("EncodePNG with Channel<3 = nil error, want error")
+	}
+	if _, err := EncodePNG(&SDImage{Width: 0, Height: 2, Channel: 3, Data: &data[0]}); err == nil {
+		t.Fatal("EncodePNG with zero width = nil error, want error")
+	}
+}

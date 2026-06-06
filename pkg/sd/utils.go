@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,33 +89,43 @@ func GetCpuAVX() string {
 	}
 }
 
-// toRGBA converts a raw SDImage into a Go *image.RGBA. It assumes 3-channel RGB
-// pixel data and adds an opaque alpha channel.
+// toRGBA converts a raw SDImage into a Go *image.RGBA. It reads the first three
+// channels as RGB (ignoring any extra channels) and adds an opaque alpha
+// channel. Malformed or oversized inputs return an error rather than panicking.
 func toRGBA(img *SDImage) (*image.RGBA, error) {
 	if img == nil || img.Data == nil {
 		return nil, fmt.Errorf("invalid image data")
+	}
+	if img.Channel < 3 {
+		return nil, fmt.Errorf("unsupported channel count %d: need at least 3 (RGB)", img.Channel)
+	}
+	if img.Width == 0 || img.Height == 0 {
+		return nil, fmt.Errorf("invalid image dimensions %dx%d", img.Width, img.Height)
+	}
+
+	// Compute the pixel-buffer length in uint64 to avoid the uint32 overflow
+	// that a direct Width*Height*Channel multiply would risk, then guard it
+	// against the platform int size before slicing/indexing.
+	count := uint64(img.Width) * uint64(img.Height) * uint64(img.Channel)
+	if count > uint64(math.MaxInt) {
+		return nil, fmt.Errorf("image too large: %d bytes", count)
 	}
 
 	// Create RGBA image
 	bounds := image.Rect(0, 0, int(img.Width), int(img.Height))
 	rgba := image.NewRGBA(bounds)
 
-	// Convert raw data to RGBA format
-	// Note: This assumes image data is in RGB format, adjust as needed
-	// For 3-channel RGB data, add Alpha channel
-	data := unsafe.Slice(img.Data, img.Width*img.Height*img.Channel)
-	for i := 0; i < int(img.Width*img.Height); i++ {
-		index := i * int(img.Channel)
-		x := i % int(img.Width)
-		y := i / int(img.Width)
+	// Convert raw data to RGBA format, reading 3 channels per pixel.
+	data := unsafe.Slice(img.Data, int(count))
+	channel := int(img.Channel)
+	width := int(img.Width)
+	pixels := width * int(img.Height)
+	for i := 0; i < pixels; i++ {
+		index := i * channel
+		x := i % width
+		y := i / width
 
-		var r, g, b, a uint8
-		r = data[index]
-		g = data[index+1]
-		b = data[index+2]
-		a = 255 // opaque
-
-		rgba.Set(x, y, color.RGBA{r, g, b, a})
+		rgba.Set(x, y, color.RGBA{data[index], data[index+1], data[index+2], 255}) // opaque alpha
 	}
 
 	return rgba, nil
