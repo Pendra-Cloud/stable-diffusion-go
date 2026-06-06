@@ -1,0 +1,49 @@
+name: Test
+
+# PR check: runs the repo's standard gates (the same set CLAUDE.md lists under
+# "Before pushing") so every pull request gets a real pass/fail status. None of
+# this needs the native shared library — the binding is pure Go and the tests
+# are guarded to run without a loaded lib.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt (must print nothing)
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"; echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: cross-compile (windows/amd64)
+        run: GOOS=windows GOARCH=amd64 go build ./...
+
+      - name: cross-compile (darwin/arm64)
+        run: GOOS=darwin GOARCH=arm64 go build ./...

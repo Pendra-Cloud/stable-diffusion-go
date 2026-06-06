@@ -1,0 +1,94 @@
+name: Refresh upstream pin
+
+# Weekly check for a newer leejet/stable-diffusion.cpp release. When one exists,
+# open a PR that bumps lib/version.txt to it. The PR is for HUMAN review and is
+# NOT auto-merged: a version bump can change the upstream C structs/symbols, and
+# the pure-Go binding mirrors those layouts by hand — so a bump must be paired
+# with a binding review/port and validated against a real library before merge.
+# (The symbol gate in build-libs.yml only checks symbol presence, not struct
+# layout, so it cannot catch an ABI drift on its own.)
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  SD_UPSTREAM: leejet/stable-diffusion.cpp
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Open bump PR if upstream is newer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          current="$(tr -d '[:space:]' < lib/version.txt)"
+          latest="$(gh release view --repo "$SD_UPSTREAM" --json tagName -q .tagName)"
+          echo "current pin: $current"
+          echo "latest upstream: $latest"
+
+          if [ -z "$latest" ]; then
+            echo "Could not resolve latest upstream release; skipping."
+            exit 0
+          fi
+          if [ "$current" = "$latest" ]; then
+            echo "Already on the latest pin; nothing to do."
+            exit 0
+          fi
+
+          branch="auto/bump-sd-${latest}"
+          # Skip if a bump PR for this exact version is already open.
+          if [ -n "$(gh pr list --head "$branch" --state open --json number -q '.[].number')" ]; then
+            echo "A bump PR for $latest is already open."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          printf '%s' "$latest" > lib/version.txt
+          git add lib/version.txt
+          git commit -m "chore: bump stable-diffusion.cpp pin to ${latest}"
+          git push -u origin "$branch"
+
+          gh pr create --base main --head "$branch" \
+            --title "chore: bump stable-diffusion.cpp pin to ${latest}" \
+            --body "$(cat <<EOF
+          Automated weekly check: upstream \`${SD_UPSTREAM}\` has a newer release.
+
+          - current pin: \`${current}\`
+          - latest:      \`${latest}\`
+
+          ## ⚠️ Do not merge without a binding review
+
+          Bumping \`lib/version.txt\` changes which upstream commit the native
+          libraries are built from. The pure-Go binding in \`pkg/sd\` mirrors the
+          upstream C **structs, enums, and function signatures** by hand. If any
+          of those changed between the two commits, merging this **without
+          porting the binding** will cause silent ABI mismatches (wrong params /
+          memory corruption) at runtime.
+
+          The \`build-libs.yml\` symbol gate only verifies symbol **presence**,
+          not struct layout, so it cannot catch this on its own.
+
+          Before merging:
+          1. Diff upstream \`include/stable-diffusion.h\` between \`${current##*-}\`
+             and \`${latest##*-}\` (structs, enums, signatures).
+          2. Update \`pkg/sd\` (and \`lib/expected-symbols.txt\` if the registered
+             symbol set changes) to match.
+          3. Validate against a real build + model run.
+
+          Note: this PR was opened with \`GITHUB_TOKEN\`, so the Test workflow
+          won't auto-run on it — re-trigger it (e.g. close/reopen or push an
+          empty commit) once the binding is ready.
+          EOF
+          )"
