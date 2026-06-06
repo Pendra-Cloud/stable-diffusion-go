@@ -14,9 +14,13 @@ name: Build native libs
 #     ggml_* local. A fail-closed symbol gate asserts all expected symbols are
 #     present AND no ggml symbol leaked, before anything is published.
 #
-# Trigger: manual (workflow_dispatch) or pushing a `libs-*` tag. The
-# workflow_dispatch `only` input limits the run to a single variant id (for a
-# cheap gating run); the `setup` job below applies it to every job/matrix leg.
+# Triggers:
+#   * push to main changing lib/version.txt — the routine path: bump the pin,
+#     merge, and the full matrix builds and the release job tags + publishes
+#     libs-<version> automatically (no manual tagging).
+#   * workflow_dispatch — manual run; the `only` input limits it to a single
+#     variant id (a cheap gating run), applied by the `setup` job below.
+#   * push of a `libs-*` tag — manual override / rebuild of a specific pin.
 
 on:
   workflow_dispatch:
@@ -26,6 +30,14 @@ on:
         required: false
         default: ""
   push:
+    # Auto-publish when the upstream pin changes on main: bumping
+    # lib/version.txt and merging is all it takes — the release job below
+    # creates the libs-<version> tag itself, so no tag is ever pushed by hand.
+    branches:
+      - main
+    paths:
+      - lib/version.txt
+    # Explicit tag pushes still work as a manual override / rebuild path.
     tags:
       - "libs-*"
 
@@ -432,6 +444,8 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/stable-diffusion-libs-*.tar.gz dist/checksums.txt --clobber
           else
+            # Creates the libs-<version> tag at the triggering commit if it
+            # doesn't already exist — this is the automatic tagging step.
             gh release create "$TAG" dist/stable-diffusion-libs-*.tar.gz dist/checksums.txt \
-              --title "$TAG" --notes "$notes"
+              --target "$GITHUB_SHA" --title "$TAG" --notes "$notes"
           fi
