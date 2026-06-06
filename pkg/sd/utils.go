@@ -1,6 +1,7 @@
 package sd
 
 import (
+	"bytes"
 	"fmt"
 	"golang.org/x/sys/cpu"
 	"image"
@@ -87,10 +88,11 @@ func GetCpuAVX() string {
 	}
 }
 
-// SaveImage saves SDImage as PNG file
-func SaveImage(img *SDImage, path string) error {
+// toRGBA converts a raw SDImage into a Go *image.RGBA. It assumes 3-channel RGB
+// pixel data and adds an opaque alpha channel.
+func toRGBA(img *SDImage) (*image.RGBA, error) {
 	if img == nil || img.Data == nil {
-		return fmt.Errorf("invalid image data")
+		return nil, fmt.Errorf("invalid image data")
 	}
 
 	// Create RGBA image
@@ -113,6 +115,32 @@ func SaveImage(img *SDImage, path string) error {
 		a = 255 // opaque
 
 		rgba.Set(x, y, color.RGBA{r, g, b, a})
+	}
+
+	return rgba, nil
+}
+
+// EncodePNG encodes an SDImage as PNG and returns the bytes, without touching
+// the filesystem — useful for serving generated images directly (e.g. base64
+// over an API) instead of round-tripping through a file.
+func EncodePNG(img *SDImage) ([]byte, error) {
+	rgba, err := toRGBA(img)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, rgba); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// SaveImage saves SDImage as PNG file
+func SaveImage(img *SDImage, path string) error {
+	rgba, err := toRGBA(img)
+	if err != nil {
+		return err
 	}
 
 	// Create output file

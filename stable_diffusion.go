@@ -672,12 +672,16 @@ func (sDiffusion *StableDiffusion) GenerateImage(imgGenParams *ImgGenParams, new
 		sdImgGenParams.Cache.EndPercent = 0.95
 	}
 
-	// Generate image
+	// Generate image. The context is intentionally NOT freed here: the model is
+	// loaded once in NewStableDiffusion and reused across many GenerateImage
+	// calls. Teardown is the caller's responsibility via (*StableDiffusion).Free.
 	img := sDiffusion.ctx.GenerateImage(&sdImgGenParams)
 	if img == nil {
-		sDiffusion.ctx.Free()
 		return errors.New("failed to generate image")
 	}
+	// generate_image returns a malloc'd array of BatchCount images, each with a
+	// malloc'd pixel buffer; free it once we're done with it to avoid a leak.
+	defer sd.FreeImages(img, int(sdImgGenParams.BatchCount))
 
 	fmt.Println("\nImage generated successfully!")
 	fmt.Printf("Image dimensions: %dx%d\n", img.Width, img.Height)
@@ -687,12 +691,8 @@ func (sDiffusion *StableDiffusion) GenerateImage(imgGenParams *ImgGenParams, new
 	// Save image
 	err := sd.SaveImage(img, newImagePath)
 	if err != nil {
-		sDiffusion.ctx.Free()
 		return errors.New("failed to save image")
 	}
-
-	// Free resources after all operations are completed
-	sDiffusion.ctx.Free()
 
 	return nil
 
