@@ -2,12 +2,19 @@ package main
 
 import (
 	"fmt"
-	stablediffusion "github.com/orangelang/stable-diffusion-go"
+	stablediffusion "github.com/Pendra-Cloud/stable-diffusion-go"
 )
 
 func main() {
 	fmt.Println("Stable Diffusion Go - Text to Image Example")
 	fmt.Println("===============================================")
+
+	// Load the native library before use. Pass the directory that holds the
+	// shared library, or "" to use the OS default search path.
+	if err := stablediffusion.Load(""); err != nil {
+		fmt.Println("Failed to load stable-diffusion library:", err)
+		return
+	}
 
 	sd, err := stablediffusion.NewStableDiffusion(&stablediffusion.ContextParams{
 		DiffusionModelPath: "D:\\hf-mirror\\Z-Image-Turbo-GGUF\\z_image_turbo-Q4_K_M.gguf",

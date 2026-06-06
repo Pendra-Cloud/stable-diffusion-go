@@ -3,11 +3,19 @@ package stable_diffusion
 import (
 	"errors"
 	"fmt"
-	"github.com/orangelang/stable-diffusion-go/pkg/sd"
+	"github.com/Pendra-Cloud/stable-diffusion-go/pkg/sd"
 	"os"
 	"path/filepath"
 	"unsafe"
 )
+
+// Load loads the stable-diffusion shared library from libDir. An empty libDir
+// falls back to the OS default search path. It must be called once before
+// creating a context or generating; it is idempotent and returns an error
+// (never panics) when the library is absent or incompatible.
+func Load(libDir string) error {
+	return sd.Load(libDir)
+}
 
 // Embedding embedding structure for defining model embeddings
 type Embedding struct {

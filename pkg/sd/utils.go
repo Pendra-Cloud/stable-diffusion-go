@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -86,19 +85,6 @@ func GetCpuAVX() string {
 	} else {
 		return "noavx"
 	}
-}
-
-// GetSDLibPath gets SD library path
-func GetSDLibPath(libName string) string {
-	workDir, err := os.Getwd()
-	if err != nil {
-		fmt.Printf("Failed to get working directory: %v\n", err)
-		return ""
-	}
-
-	libPath := filepath.Join(workDir, "lib", runtime.GOOS, libName)
-	fmt.Println("Loading stable-diffusion library: " + libPath)
-	return libPath
 }
 
 // SaveImage saves SDImage as PNG file

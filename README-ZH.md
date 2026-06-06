@@ -62,7 +62,7 @@ stable-diffusion-go/
 ### 1. 安装依赖
 
 ```bash
-go get github.com/orangelang/stable-diffusion-go
+go get github.com/Pendra-Cloud/stable-diffusion-go
 ```
 
 ### 2. 准备模型文件
@@ -107,7 +107,7 @@ package main
 
 import (
 	"fmt"
-	stablediffusion "github.com/orangelang/stable-diffusion-go"
+	stablediffusion "github.com/Pendra-Cloud/stable-diffusion-go"
 )
 
 func main() {
@@ -276,7 +276,7 @@ package main
 
 import (
 	"fmt"
-	stablediffusion "github.com/orangelang/stable-diffusion-go"
+	stablediffusion "github.com/Pendra-Cloud/stable-diffusion-go"
 )
 
 func main() {
@@ -318,7 +318,7 @@ package main
 
 import (
 	"fmt"
-	stablediffusion "github.com/orangelang/stable-diffusion-go"
+	stablediffusion "github.com/Pendra-Cloud/stable-diffusion-go"
 )
 
 func main() {
