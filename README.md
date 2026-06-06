@@ -1,7 +1,5 @@
 # stable-diffusion-go
 
-[简体中文](README-ZH.md)
-
 A **pure-Go** binding to [`leejet/stable-diffusion.cpp`](https://github.com/leejet/stable-diffusion.cpp),
 built on [`ebitengine/purego`](https://github.com/ebitengine/purego) so it calls
 the native library directly over FFI — **no cgo required**. It runs on Linux,
