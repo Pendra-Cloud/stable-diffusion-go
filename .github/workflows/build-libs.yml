@@ -52,7 +52,15 @@ env:
   # CUDA build is independent (nvidia/cuda:13.0.0 devel container).
   CUDA_WINDOWS_VERSION: "12.9.1"
   # Turing→Blackwell. Pascal/Volta (sm_61/sm_70) are intentionally dropped.
+  # Used by the Linux CUDA build (container, fast nvcc).
   CUDA_ARCHS: "75;80;86;89;90;100;120"
+  # Windows nvcc on the 4-core runner is far slower than Linux, and building all
+  # seven arches sequentially after the four CPU + Vulkan variants pushed the
+  # Windows job past an hour. Trim Windows to SASS for the common desktop arches
+  # (Ampere-consumer 86, Ada 89) plus full SASS+PTX for Blackwell-consumer 120 —
+  # the PTX gives forward-compatible JIT for newer GPUs. Other arches (Turing,
+  # Hopper/Blackwell-DC) are rare on Windows desktops; Linux keeps the full set.
+  CUDA_ARCHS_WINDOWS: "86-real;89-real;120"
   # Shared base flags for every variant. Hidden visibility + static ggml is the
   # isolation mechanism; SD_API (default visibility) re-exports only sd_*.
   SD_BASE_FLAGS: >-
@@ -366,7 +374,7 @@ jobs:
             Write-Host "::group::build $name"
             $bdir = "upstream/build-$name"
             $extra = $variants[$name]
-            $cfg = "cmake -S upstream -B $bdir -G Ninja $base -DCMAKE_CUDA_ARCHITECTURES=`"$env:CUDA_ARCHS`" $extra"
+            $cfg = "cmake -S upstream -B $bdir -G Ninja $base -DCMAKE_CUDA_ARCHITECTURES=`"$env:CUDA_ARCHS_WINDOWS`" $extra"
             Write-Host $cfg
             iex $cfg
             cmake --build $bdir --config Release -j
