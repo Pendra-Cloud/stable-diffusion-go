@@ -309,14 +309,25 @@ jobs:
   # ---------------------------------------------------------------------------
   # Windows — the binding selects a per-variant SUBDIR within the lib dir
   # (avx512/ avx2/ avx/ noavx/ for CPU, cuda12/ vulkan/ for GPU; see
-  # windowsLibCandidates in pkg/sd/load.go). So we build every variant and ship
-  # ONE archive carrying that subdir tree; a single lib dir then satisfies any
-  # host.
+  # windowsLibCandidates in pkg/sd/load.go). Each variant builds as its own
+  # matrix leg in parallel (installing only the toolchain it needs); the
+  # windows_assemble job then merges them into ONE archive carrying that subdir
+  # tree, so a single lib dir satisfies any host.
   # ---------------------------------------------------------------------------
   windows:
     needs: setup
     if: ${{ needs.setup.outputs.run_windows == 'true' }}
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { subdir: avx2, kind: cpu, flags: "-DGGML_NATIVE=OFF -DGGML_AVX2=ON" }
+          - { subdir: avx512, kind: cpu, flags: "-DGGML_NATIVE=OFF -DGGML_AVX512=ON -DGGML_AVX=ON -DGGML_AVX2=ON" }
+          - { subdir: avx, kind: cpu, flags: "-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF" }
+          - { subdir: noavx, kind: cpu, flags: "-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF" }
+          - { subdir: vulkan, kind: vulkan, flags: "-DSD_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON" }
+          - { subdir: cuda12, kind: cuda, flags: "-DSD_CUDA=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON" }
     defaults:
       run:
         shell: pwsh
@@ -326,6 +337,7 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install Vulkan SDK
+        if: matrix.kind == 'vulkan'
         run: |
           $ErrorActionPreference = "Stop"
           # Resolve the latest published Windows SDK version rather than pinning a
@@ -340,8 +352,8 @@ jobs:
           "VULKAN_SDK=C:\VulkanSDK\$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Install CUDA toolkit
+        if: matrix.kind == 'cuda'
         uses: Jimver/cuda-toolkit@v0.2.35
-        id: cuda
         with:
           cuda: ${{ env.CUDA_WINDOWS_VERSION }}
           method: network
@@ -356,41 +368,59 @@ jobs:
           $ErrorActionPreference = "Stop"
           bash scripts/clone-upstream.sh "https://github.com/$env:SD_UPSTREAM.git" "${{ needs.setup.outputs.commit }}" upstream
 
-      - name: Build all Windows variants
+      - name: Build variant (${{ matrix.subdir }})
         run: |
           $ErrorActionPreference = "Stop"
           $base = $env:SD_BASE_FLAGS -replace "`n"," "
-          # subdir name (what the binding looks for) => extra cmake flags
-          $variants = [ordered]@{
-            "avx2"    = "-DGGML_NATIVE=OFF -DGGML_AVX2=ON";
-            "avx512"  = "-DGGML_NATIVE=OFF -DGGML_AVX512=ON -DGGML_AVX=ON -DGGML_AVX2=ON";
-            "avx"     = "-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF";
-            "noavx"   = "-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF";
-            "vulkan"  = "-DSD_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON";
-            "cuda12"  = "-DSD_CUDA=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON";
-          }
-          New-Item -ItemType Directory -Force -Path stage | Out-Null
-          foreach ($name in $variants.Keys) {
-            Write-Host "::group::build $name"
-            $bdir = "upstream/build-$name"
-            $extra = $variants[$name]
-            $cfg = "cmake -S upstream -B $bdir -G Ninja $base -DCMAKE_CUDA_ARCHITECTURES=`"$env:CUDA_ARCHS_WINDOWS`" $extra"
-            Write-Host $cfg
-            iex $cfg
-            cmake --build $bdir --config Release -j
-            $dll = Get-ChildItem -Path $bdir -Recurse -Filter "stable-diffusion.dll" | Select-Object -First 1
-            if (-not $dll) { throw "stable-diffusion.dll not found for $name" }
-            New-Item -ItemType Directory -Force -Path "stage/$name" | Out-Null
-            Copy-Item $dll.FullName "stage/$name/"
-            Write-Host "::endgroup::"
-          }
+          $bdir = "upstream/build"
+          # -DCMAKE_CUDA_ARCHITECTURES is harmless for the non-CUDA legs.
+          $cfg = "cmake -S upstream -B $bdir -G Ninja $base -DCMAKE_CUDA_ARCHITECTURES=`"$env:CUDA_ARCHS_WINDOWS`" ${{ matrix.flags }}"
+          Write-Host $cfg
+          iex $cfg
+          cmake --build $bdir --config Release -j
+          $dll = Get-ChildItem -Path $bdir -Recurse -Filter "stable-diffusion.dll" | Select-Object -First 1
+          if (-not $dll) { throw "stable-diffusion.dll not found for ${{ matrix.subdir }}" }
+          New-Item -ItemType Directory -Force -Path "stage/${{ matrix.subdir }}" | Out-Null
+          Copy-Item $dll.FullName "stage/${{ matrix.subdir }}/"
+
+      # Each leg uploads only its own subdir/stable-diffusion.dll; the
+      # windows_assemble job merges them into the final subdir-tree archive.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winpart-${{ matrix.subdir }}
+          path: stage
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Windows assemble — gather the per-variant DLLs built in parallel above into
+  # the single archive carrying the subdir tree the binding's windowsLibCandidates
+  # resolves, run the fail-closed symbol gate over all of them, and package it.
+  # ---------------------------------------------------------------------------
+  windows_assemble:
+    needs: [setup, windows]
+    if: ${{ needs.setup.outputs.run_windows == 'true' }}
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1 # provides dumpbin for the symbol gate
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: winpart-*
+          path: stage
+          merge-multiple: true
 
       - name: Verify exported symbols (fail-closed)
         run: |
           $ErrorActionPreference = "Stop"
           $expected = Get-Content lib/expected-symbols.txt | Where-Object { $_.Trim() -ne "" } | ForEach-Object { $_.Trim() }
+          $dlls = Get-ChildItem -Path stage -Recurse -Filter "stable-diffusion.dll"
+          if ($dlls.Count -lt 6) { throw "expected 6 Windows variant DLLs, found $($dlls.Count)" }
           $fail = $false
-          Get-ChildItem -Path stage -Recurse -Filter "stable-diffusion.dll" | ForEach-Object {
+          $dlls | ForEach-Object {
             $dll = $_.FullName
             Write-Host "Checking $dll"
             $dump = & dumpbin /EXPORTS $dll
@@ -402,7 +432,7 @@ jobs:
             if ($leaked) { Write-Host "LEAKED ggml symbols in ${dll}:"; $leaked | ForEach-Object { Write-Host "  $_" }; $fail = $true }
           }
           if ($fail) { throw "Windows symbol verification FAILED" }
-          Write-Host "Windows symbol verification OK"
+          Write-Host "Windows symbol verification OK ($($dlls.Count) variants)"
 
       - name: Package archive
         run: |
@@ -426,13 +456,13 @@ jobs:
   # the assets in place.
   # ---------------------------------------------------------------------------
   release:
-    needs: [setup, linux, linux-cuda, macos, windows]
+    needs: [setup, linux, linux-cuda, macos, windows_assemble]
     if: >-
       ${{ always() && needs.setup.outputs.run_full == 'true'
           && needs.linux.result == 'success'
           && needs.linux-cuda.result == 'success'
           && needs.macos.result == 'success'
-          && needs.windows.result == 'success' }}
+          && needs.windows_assemble.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
