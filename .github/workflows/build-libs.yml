@@ -135,20 +135,25 @@ jobs:
             has_previous="true"; echo "Latest tag: $latest"
           fi
 
-          commit_msg="$(git log -1 --pretty=%B "${GITHUB_SHA}")"
+          # Match control sentinels on the commit SUBJECT (first line) only, not
+          # the whole body — otherwise a commit that merely *documents* the
+          # sentinels (e.g. "...; [skip release] / #norelease opt-out") would
+          # wrongly skip or mis-bump the release. Intent goes in the subject (or
+          # a PR label); prose in the body never triggers.
+          subject="$(git log -1 --pretty=%s "${GITHUB_SHA}")"
           labels="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
                       --jq '.[].labels[].name' 2>/dev/null || true)"
           has() { printf '%s\n' "$1" | grep -qiF "$2"; }
 
-          if has "$labels" "release:skip" || has "$commit_msg" "[skip release]" || has "$commit_msg" "#norelease"; then
+          if has "$labels" "release:skip" || has "$subject" "[skip release]" || has "$subject" "#norelease"; then
             echo "Release skip requested; no build, no release."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          if has "$labels" "release:major" || has "$commit_msg" "#major"; then
+          if has "$labels" "release:major" || has "$subject" "#major"; then
             bump="major"
-          elif has "$labels" "release:minor" || has "$commit_msg" "#minor"; then
+          elif has "$labels" "release:minor" || has "$subject" "#minor"; then
             bump="minor"
           else
             bump="patch"
