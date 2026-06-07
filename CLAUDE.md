@@ -83,6 +83,23 @@ GOOS=windows GOARCH=amd64 go build ./...
 GOOS=darwin  GOARCH=arm64 go build ./...
 ```
 
+## Releases
+
+- **One release train.** Every merge to `main` runs `.github/workflows/build-libs.yml`,
+  which computes the next semantic version (`vX.Y.Z`, bumped from PR labels /
+  commit message — `release:major`/`#major`, `release:minor`/`#minor`, else
+  patch), builds the full lib matrix, and publishes a single `vX.Y.Z` release
+  carrying **both** the git tag (so `go get …@vX.Y.Z` resolves the binding) and
+  the prebuilt lib archives + `checksums.txt`. Skip a merge's release with the
+  `release:skip` label or `[skip release]` / `#norelease` in the commit (no
+  build, no release). `workflow_dispatch` runs only exercise the build — they
+  never publish.
+- `lib/version.txt` still **pins the upstream commit** that gets built; it is no
+  longer its own release tag. Bumping it (a normal merge) cuts the next `vX.Y.Z`
+  with freshly built libs.
+- Lib archive assets are **version-less** (`stable-diffusion-libs-<os>-<arch>-<proc>.tar.gz`);
+  the release tag carries the version.
+
 ## Notes
 
 - This is a **public** repository — keep everything here generic to the library.
