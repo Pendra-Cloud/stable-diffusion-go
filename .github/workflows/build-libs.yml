@@ -1,4 +1,4 @@
-name: Build native libs
+name: Release
 
 # Compiles leejet/stable-diffusion.cpp (pinned by lib/version.txt) into the
 # shared libraries this Go binding dlopens, for every (os, arch, processor)
@@ -14,35 +14,42 @@ name: Build native libs
 #     ggml_* local. A fail-closed symbol gate asserts all expected symbols are
 #     present AND no ggml symbol leaked, before anything is published.
 #
+# This is the repo's SINGLE release pipeline: every merge to main builds the
+# full lib matrix and publishes ONE semver release (vX.Y.Z) carrying both the
+# tag (so `go get ...@vX.Y.Z` resolves the binding) AND the prebuilt lib
+# archives + checksums as assets. There is no separate libs-<pin> train — the
+# upstream pin in lib/version.txt selects WHAT is built; the release is named by
+# the binding's own semantic version.
+#
 # Triggers:
-#   * push to main changing lib/version.txt — the routine path: bump the pin,
-#     merge, and the full matrix builds and the release job tags + publishes
-#     libs-<version> automatically (no manual tagging).
-#   * workflow_dispatch — manual run; the `only` input limits it to a single
-#     variant id (a cheap gating run), applied by the `setup` job below.
-#   * push of a `libs-*` tag — manual override / rebuild of a specific pin.
+#   * push to main — the routine path: the setup job computes the next semver
+#     (bump from PR labels / commit message, like the old release.yml), the full
+#     matrix builds, and the release job creates the vX.Y.Z tag + release with
+#     the libs attached. Skipped per-merge with the "release:skip" label or
+#     "[skip release]" / "#norelease" in the merge commit (no build, no release).
+#   * workflow_dispatch — manual test run; the `only` input limits it to a
+#     single variant id (a cheap gating run). Manual runs NEVER publish a
+#     release — they exist to exercise the build.
 
 on:
   workflow_dispatch:
     inputs:
       only:
-        description: "Limit to one variant id for a gating run (linux-amd64-cpu | linux-amd64-vulkan | linux-amd64-cuda | linux-arm64-cpu | darwin-arm64-metal | windows-amd64). Empty = full matrix."
+        description: "Limit to one variant id for a gating run (linux-amd64-cpu | linux-amd64-vulkan | linux-amd64-cuda | linux-arm64-cpu | darwin-arm64-metal | windows-amd64). Empty = full matrix. Manual runs never publish a release."
         required: false
         default: ""
   push:
-    # Auto-publish when the upstream pin changes on main: bumping
-    # lib/version.txt and merging is all it takes — the release job below
-    # creates the libs-<version> tag itself, so no tag is ever pushed by hand.
     branches:
       - main
-    paths:
-      - lib/version.txt
-    # Explicit tag pushes still work as a manual override / rebuild path.
-    tags:
-      - "libs-*"
+
+# Avoid two merges racing to create the same tag.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: write       # create tags and releases
+  pull-requests: read   # read labels on the merged PR
 
 env:
   SD_UPSTREAM: leejet/stable-diffusion.cpp
@@ -80,9 +87,12 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.v.outputs.version }}
-      commit: ${{ steps.v.outputs.commit }}
-      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}       # next semver, e.g. v0.1.2
+      previous: ${{ steps.v.outputs.previous }}
+      has_previous: ${{ steps.v.outputs.has_previous }}
+      skip: ${{ steps.v.outputs.skip }}
+      pin: ${{ steps.v.outputs.pin }}               # upstream pin (lib/version.txt)
+      commit: ${{ steps.v.outputs.commit }}         # upstream short sha to clone
       linux_matrix: ${{ steps.m.outputs.linux_matrix }}
       run_linux: ${{ steps.m.outputs.run_linux }}
       run_cuda: ${{ steps.m.outputs.run_cuda }}
@@ -91,15 +101,77 @@ jobs:
       run_full: ${{ steps.m.outputs.run_full }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # full history so existing tags are visible
+          fetch-tags: true
       - id: v
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          version="$(tr -d '[:space:]' < lib/version.txt)"
-          commit="${version##*-}"   # last dash-separated segment, e.g. 4ff2c8c
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "commit=$commit"   >> "$GITHUB_OUTPUT"
-          echo "tag=libs-$version" >> "$GITHUB_OUTPUT"
-          echo "Building upstream $SD_UPSTREAM @ $commit (pin: $version)"
+
+          # Upstream pin (selects WHAT we build) — unchanged role for lib/version.txt.
+          pin="$(tr -d '[:space:]' < lib/version.txt)"
+          commit="${pin##*-}"   # last dash-separated segment, e.g. 4ff2c8c
+          echo "pin=$pin"       >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "Building upstream $SD_UPSTREAM @ $commit (pin: $pin)"
+
+          # Manual runs only ever test the build — never skip, never publish.
+          if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Manual run: computing no version bump (release job won't fire)."
+            exit 0
+          fi
+
+          # --- Next semver (ported from the former release.yml) ---
+          # Match only strict vMAJOR.MINOR.PATCH tags; the git glob is too loose.
+          latest="$(git tag -l --sort=-v:refname \
+                      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+          if [ -z "$latest" ]; then
+            latest="v0.0.0"; has_previous="false"
+            echo "No existing semver tag; starting from $latest"
+          else
+            has_previous="true"; echo "Latest tag: $latest"
+          fi
+
+          commit_msg="$(git log -1 --pretty=%B "${GITHUB_SHA}")"
+          labels="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+                      --jq '.[].labels[].name' 2>/dev/null || true)"
+          has() { printf '%s\n' "$1" | grep -qiF "$2"; }
+
+          if has "$labels" "release:skip" || has "$commit_msg" "[skip release]" || has "$commit_msg" "#norelease"; then
+            echo "Release skip requested; no build, no release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if has "$labels" "release:major" || has "$commit_msg" "#major"; then
+            bump="major"
+          elif has "$labels" "release:minor" || has "$commit_msg" "#minor"; then
+            bump="minor"
+          else
+            bump="patch"
+          fi
+          echo "Bump level: $bump"
+
+          ver="${latest#v}"; IFS='.' read -r major minor patch <<< "$ver"
+          case "$bump" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          next="v${major}.${minor}.${patch}"
+          if git rev-parse -q --verify "refs/tags/${next}" >/dev/null; then
+            echo "Tag ${next} already exists; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Next version: $next"
+          echo "skip=false"                  >> "$GITHUB_OUTPUT"
+          echo "version=$next"               >> "$GITHUB_OUTPUT"
+          echo "previous=$latest"            >> "$GITHUB_OUTPUT"
+          echo "has_previous=$has_previous"  >> "$GITHUB_OUTPUT"
       - id: m
         env:
           ONLY: ${{ inputs.only }}
@@ -132,7 +204,7 @@ jobs:
   # ---------------------------------------------------------------------------
   linux:
     needs: setup
-    if: ${{ needs.setup.outputs.run_linux == 'true' }}
+    if: ${{ needs.setup.outputs.run_linux == 'true' && needs.setup.outputs.skip != 'true' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -189,11 +261,12 @@ jobs:
       - name: Package archive
         run: |
           set -euo pipefail
-          ver="${{ needs.setup.outputs.version }}"
           stage="stage"; mkdir -p "$stage"
           cp "${{ steps.lib.outputs.path }}" "$stage/"
           cp lib/stable-diffusion.cpp.txt lib/ggml.txt "$stage/" 2>/dev/null || true
-          name="stable-diffusion-libs-linux-${{ matrix.arch }}-${{ matrix.proc }}-${ver}.tar.gz"
+          # Version-less name: the release TAG (vX.Y.Z) carries the version, so
+          # the download URL is .../releases/download/<tag>/<this fixed name>.
+          name="stable-diffusion-libs-linux-${{ matrix.arch }}-${{ matrix.proc }}.tar.gz"
           tar -C "$stage" -czf "$name" .
           echo "Packaged $name"
 
@@ -210,7 +283,7 @@ jobs:
   # ---------------------------------------------------------------------------
   linux-cuda:
     needs: setup
-    if: ${{ needs.setup.outputs.run_cuda == 'true' }}
+    if: ${{ needs.setup.outputs.run_cuda == 'true' && needs.setup.outputs.skip != 'true' }}
     runs-on: ubuntu-22.04
     container: nvidia/cuda:13.0.0-devel-ubuntu22.04
     # Inside a container the default step shell is `sh` (dash), which lacks
@@ -249,11 +322,10 @@ jobs:
       - name: Package archive
         run: |
           set -euo pipefail
-          ver="${{ needs.setup.outputs.version }}"
           stage="stage"; mkdir -p "$stage"
           cp "${{ steps.lib.outputs.path }}" "$stage/"
           cp lib/stable-diffusion.cpp.txt lib/ggml.txt "$stage/" 2>/dev/null || true
-          name="stable-diffusion-libs-linux-amd64-cuda-${ver}.tar.gz"
+          name="stable-diffusion-libs-linux-amd64-cuda.tar.gz"
           tar -C "$stage" -czf "$name" .
           echo "Packaged $name"
       - uses: actions/upload-artifact@v4
@@ -267,7 +339,7 @@ jobs:
   # ---------------------------------------------------------------------------
   macos:
     needs: setup
-    if: ${{ needs.setup.outputs.run_macos == 'true' }}
+    if: ${{ needs.setup.outputs.run_macos == 'true' && needs.setup.outputs.skip != 'true' }}
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -293,11 +365,10 @@ jobs:
       - name: Package archive
         run: |
           set -euo pipefail
-          ver="${{ needs.setup.outputs.version }}"
           stage="stage"; mkdir -p "$stage"
           cp "${{ steps.lib.outputs.path }}" "$stage/"
           cp lib/stable-diffusion.cpp.txt lib/ggml.txt "$stage/" 2>/dev/null || true
-          name="stable-diffusion-libs-darwin-arm64-metal-${ver}.tar.gz"
+          name="stable-diffusion-libs-darwin-arm64-metal.tar.gz"
           tar -C "$stage" -czf "$name" .
           echo "Packaged $name"
       - uses: actions/upload-artifact@v4
@@ -316,7 +387,7 @@ jobs:
   # ---------------------------------------------------------------------------
   windows:
     needs: setup
-    if: ${{ needs.setup.outputs.run_windows == 'true' }}
+    if: ${{ needs.setup.outputs.run_windows == 'true' && needs.setup.outputs.skip != 'true' }}
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -398,7 +469,7 @@ jobs:
   # ---------------------------------------------------------------------------
   windows_assemble:
     needs: [setup, windows]
-    if: ${{ needs.setup.outputs.run_windows == 'true' }}
+    if: ${{ needs.setup.outputs.run_windows == 'true' && needs.setup.outputs.skip != 'true' }}
     runs-on: windows-latest
     defaults:
       run:
@@ -437,9 +508,8 @@ jobs:
       - name: Package archive
         run: |
           $ErrorActionPreference = "Stop"
-          $ver = "${{ needs.setup.outputs.version }}"
           Copy-Item lib/stable-diffusion.cpp.txt,lib/ggml.txt stage/ -ErrorAction SilentlyContinue
-          $name = "stable-diffusion-libs-windows-amd64-$ver.tar.gz"
+          $name = "stable-diffusion-libs-windows-amd64.tar.gz"
           tar -C stage -czf $name .
           Write-Host "Packaged $name"
 
@@ -450,15 +520,19 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # Release — gather every archive, write checksums, attach to the GitHub
-  # Release tagged with the pin. Runs only for a FULL build (not a gating run),
-  # and only when every build job succeeded. Idempotent so a re-run refreshes
-  # the assets in place.
+  # Release — gather every archive, write checksums, and publish the single
+  # vX.Y.Z release carrying the binding's tag (so `go get ...@vX.Y.Z` resolves)
+  # AND the lib archives + checksums as assets. Only on a real merge to main
+  # (never on a manual dispatch), only for a full build, only when not skipped,
+  # and only when every build job succeeded. Idempotent: a re-run refreshes the
+  # assets on the existing release in place.
   # ---------------------------------------------------------------------------
   release:
     needs: [setup, linux, linux-cuda, macos, windows_assemble]
     if: >-
-      ${{ always() && needs.setup.outputs.run_full == 'true'
+      ${{ always() && github.event_name == 'push'
+          && needs.setup.outputs.run_full == 'true'
+          && needs.setup.outputs.skip != 'true'
           && needs.linux.result == 'success'
           && needs.linux-cuda.result == 'success'
           && needs.macos.result == 'success'
@@ -480,26 +554,34 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.setup.outputs.tag }}
           VERSION: ${{ needs.setup.outputs.version }}
+          PREVIOUS: ${{ needs.setup.outputs.previous }}
+          HAS_PREVIOUS: ${{ needs.setup.outputs.has_previous }}
+          PIN: ${{ needs.setup.outputs.pin }}
           COMMIT: ${{ needs.setup.outputs.commit }}
         run: |
           set -euo pipefail
-          notes="Prebuilt stable-diffusion.cpp native libraries for ${SD_UPSTREAM} @ ${COMMIT} (pin: ${VERSION}).
+          notes="$(cat <<EOF
+          stable-diffusion-go ${VERSION} — pure-Go binding + prebuilt native libraries.
 
-          Built by .github/workflows/build-libs.yml. Each archive contains a
-          self-contained libstable-diffusion (ggml statically linked, hidden
-          visibility — exports only the sd_* symbols pkg/sd/load.go registers).
+          Built from ${SD_UPSTREAM} @ ${COMMIT} (upstream pin: ${PIN}).
 
-          CUDA archives require a matching host CUDA runtime; Vulkan archives
-          require a Vulkan loader/ICD on the host. The Windows archive carries
-          the per-CPU/GPU (avx2/avx512/avx/noavx/vulkan/cuda12) subdir tree the
-          binding selects from."
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/stable-diffusion-libs-*.tar.gz dist/checksums.txt --clobber
+          \`go get github.com/Pendra-Cloud/stable-diffusion-go@${VERSION}\` for the
+          binding; the lib archives attached here match this exact tag. Each archive
+          contains a self-contained libstable-diffusion (ggml statically linked,
+          hidden visibility — exports only the sd_* symbols pkg/sd/load.go registers).
+
+          CUDA archives require a matching host CUDA runtime; Vulkan archives require
+          a Vulkan loader/ICD on the host. The Windows archive carries the per-CPU/GPU
+          (avx2/avx512/avx/noavx/vulkan/cuda12) subdir tree the binding selects from.
+          EOF
+          )"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release upload "$VERSION" dist/stable-diffusion-libs-*.tar.gz dist/checksums.txt --clobber
           else
-            # Creates the libs-<version> tag at the triggering commit if it
-            # doesn't already exist — this is the automatic tagging step.
-            gh release create "$TAG" dist/stable-diffusion-libs-*.tar.gz dist/checksums.txt \
-              --target "$GITHUB_SHA" --title "$TAG" --notes "$notes"
+            # Creates the vX.Y.Z tag at the merge commit — this is the automatic
+            # tagging step; --generate-notes appends the commit/PR changelog.
+            args=(--target "$GITHUB_SHA" --title "$VERSION" --notes "$notes" --generate-notes)
+            [ "$HAS_PREVIOUS" = "true" ] && args+=(--notes-start-tag "$PREVIOUS")
+            gh release create "$VERSION" dist/stable-diffusion-libs-*.tar.gz dist/checksums.txt "${args[@]}"
           fi

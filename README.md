@@ -30,18 +30,24 @@ not committed. The library is built from the upstream commit pinned in
 
 ### Prebuilt archives
 
-Per-variant archives are built and published from this repository's
-[Releases](https://github.com/Pendra-Cloud/stable-diffusion-go/releases) by the
-[`build-libs.yml`](.github/workflows/build-libs.yml) workflow (upstream ships no
-prebuilt release covering these variants). Download the one matching your host,
-extract it into a directory, and pass that directory to `Load`:
+**The binding and its libraries ship together on one tag.** Every
+[Release](https://github.com/Pendra-Cloud/stable-diffusion-go/releases) is a
+single `vX.Y.Z` that carries both the Go module (so `go get …@vX.Y.Z` resolves
+the binding) **and** the prebuilt lib archives + `checksums.txt` as assets,
+built by the [`build-libs.yml`](.github/workflows/build-libs.yml) workflow
+(upstream ships no prebuilt release covering these variants). Pick the version
+you pinned, download the archive matching your host from that release, extract
+it into a directory, and pass that directory to `Load`. The asset names are
+version-less — the release tag carries the version:
 
 ```
-stable-diffusion-libs-linux-amd64-cpu-<version>.tar.gz      # also -cuda, -vulkan
-stable-diffusion-libs-linux-arm64-cpu-<version>.tar.gz
-stable-diffusion-libs-darwin-arm64-metal-<version>.tar.gz
-stable-diffusion-libs-windows-amd64-<version>.tar.gz        # carries the subdir tree
+stable-diffusion-libs-linux-amd64-cpu.tar.gz      # also -cuda, -vulkan
+stable-diffusion-libs-linux-arm64-cpu.tar.gz
+stable-diffusion-libs-darwin-arm64-metal.tar.gz
+stable-diffusion-libs-windows-amd64.tar.gz        # carries the subdir tree
 ```
+
+e.g. `https://github.com/Pendra-Cloud/stable-diffusion-go/releases/download/vX.Y.Z/stable-diffusion-libs-linux-amd64-cpu.tar.gz`.
 
 Each archive ships a **single self-contained library** (ggml is statically
 linked, with hidden visibility so only the `stable-diffusion.cpp` symbols are
