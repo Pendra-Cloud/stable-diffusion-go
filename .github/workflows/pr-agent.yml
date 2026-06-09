@@ -1,0 +1,49 @@
+name: PR Agent
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  pr_agent_job:
+    # - Skip bot-authored events so pr-agent never reacts to its own comments.
+    # - issue_comment fires on plain issues too; only run when the comment is on a PR.
+    # - Skip fork PRs, which don't receive PENDRA_API_KEY.
+    if: >-
+      ${{ github.event.sender.type != 'Bot'
+          && (github.event_name != 'issue_comment' || github.event.issue.pull_request)
+          && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    name: PR Agent review
+    steps:
+      - name: PR Agent
+        # Pinned to the SHA of v0.36.0 (2026-06-01) — third-party action, SHA-pin for supply-chain safety.
+        uses: the-pr-agent/pr-agent@ffe1f89a4dafc7d8e88b9cf010a3233e30b49f43 # v0.36.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # --- Pendra OpenAI-compatible inference ---
+          # litellm strips the `openai/` prefix and POSTs model `qwen3.6:27b` to OPENAI.API_BASE.
+          OPENAI.KEY: ${{ secrets.PENDRA_API_KEY }}
+          OPENAI.API_BASE: "https://api.pendra.ai/api/v1"
+          config.model: "openai/qwen3.6:27b"
+          config.fallback_models: '["openai/qwen3.6:27b"]'
+          # qwen3.6:27b is a reasoning model; single calls can run several minutes.
+          # Raise the default 120s ceiling so review/improve calls aren't cut short.
+          config.ai_timeout: "600"
+          # Required for a model litellm doesn't natively know; mirrors the catalogue context window.
+          config.custom_model_max_tokens: "262144"
+          # Post improve suggestions as inline, committable suggestions on the diff.
+          pr_code_suggestions.commitable_code_suggestions: "true"
+          # --- which tools auto-run on each PR into main ---
+          github_action_config.auto_review: "true"
+          github_action_config.auto_describe: "false"
+          github_action_config.auto_improve: "true"
+          github_action_config.pr_actions: '["opened", "reopened", "ready_for_review", "synchronize"]'
