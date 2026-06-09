@@ -24,7 +24,6 @@ func main() {
 		KeepClipOnCPU:      true,
 		OffloadParamsToCPU: true,
 		NThreads:           4,
-		FlowShift:          3.0,
 	})
 
 	if err != nil {
@@ -40,6 +39,8 @@ func main() {
 		SampleSteps: 40,
 		VideoFrames: 33,
 		CfgScale:    6.0,
+		// flow_shift moved from context params to a per-generation sampler param upstream.
+		FlowShift: 3.0,
 	}, "./output.mp4")
 
 	if err != nil {

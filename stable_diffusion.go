@@ -3,11 +3,27 @@ package stable_diffusion
 import (
 	"errors"
 	"fmt"
-	"github.com/Pendra-Cloud/stable-diffusion-go/pkg/sd"
+	"math"
 	"os"
 	"path/filepath"
 	"unsafe"
+
+	"github.com/Pendra-Cloud/stable-diffusion-go/pkg/sd"
 )
+
+// flowShiftOrAuto returns the caller's flow_shift, or the native "auto" sentinel
+// (INFINITY) when it is left at zero. Upstream's sd_sample_params_init defaults
+// flow_shift to INFINITY, which makes the library pick a model-specific shift
+// (e.g. 5.0 / 3.0 / 1.5 depending on the model). Because this wrapper builds the
+// sample-params struct as a literal rather than via sd_sample_params_init, we
+// must reproduce that sentinel so a zero value doesn't silently force shift=0
+// and degrade flow-model output.
+func flowShiftOrAuto(v float32) float32 {
+	if v == 0 {
+		return float32(math.Inf(1))
+	}
+	return v
+}
 
 // Load loads the stable-diffusion shared library from libDir. An empty libDir
 // falls back to the OS default search path. It must be called once before
@@ -46,6 +62,12 @@ var SampleMethodMap = map[string]sd.SampleMethod{
 	"lcm":                 sd.LCMSampleMethod,
 	"ddim_trailing":       sd.DDIMTrailingSampleMethod,
 	"tcd":                 sd.TCDSampleMethod,
+	"res_multistep":       sd.ResMultistepSampleMethod,
+	"res_2s":              sd.Res2SSampleMethod,
+	"er_sde":              sd.ERSDESampleMethod,
+	"euler_cfg_pp":        sd.EulerCFGPPSampleMethod,
+	"euler_a_cfg_pp":      sd.EulerACFGPPSampleMethod,
+	"euler_ge":            sd.EulerGESampleMethod,
 	"sample_method_count": sd.SampleMethodCount,
 }
 
@@ -62,6 +84,8 @@ var SchedulerMap = map[string]sd.Scheduler{
 	"smoothstep":      sd.SmoothstepScheduler,
 	"kl_optimal":      sd.KLOptimalScheduler,
 	"lcm":             sd.LCMScheduler,
+	"bong_tangent":    sd.BongTangentScheduler,
+	"ltx2":            sd.LTX2Scheduler,
 	"scheduler_count": sd.SchedulerCount,
 }
 
@@ -117,6 +141,8 @@ var SDTypeMap = map[string]sd.SDType{
 	// "iq4_nl_4_8": SD_TYPE_IQ4_NL_4_8,
 	// "iq4_nl_8_8": SD_TYPE_IQ4_NL_8_8,
 	"mxfp4":   sd.SDTypeMXFP4,
+	"nvfp4":   sd.SDTypeNVFP4,
+	"q1_0":    sd.SDTypeQ1_0,
 	"default": sd.SDTypeCount, // Default
 }
 
@@ -137,6 +163,28 @@ var LoraApplyModeMap = map[string]sd.LoraApplyMode{
 	"lora_apply_mode_count": sd.LoraApplyModeCount,
 }
 
+// VAEFormatMap VAE format mapping (controls how the VAE weights are interpreted)
+var VAEFormatMap = map[string]sd.SDVAEFormat{
+	"auto":  sd.VAEFormatAuto, // Default
+	"flux":  sd.FluxVAEFormat,
+	"sd3":   sd.SD3VAEFormat,
+	"flux2": sd.Flux2VAEFormat,
+}
+
+// HiresUpscalerMap hi-res-fix upscaler mapping
+var HiresUpscalerMap = map[string]sd.SDHiresUpscaler{
+	"none":                       sd.HiresUpscalerNone, // Default
+	"latent":                     sd.HiresUpscalerLatent,
+	"latent_nearest":             sd.HiresUpscalerLatentNearest,
+	"latent_nearest_exact":       sd.HiresUpscalerLatentNearestExact,
+	"latent_antialiased":         sd.HiresUpscalerLatentAntialiased,
+	"latent_bicubic":             sd.HiresUpscalerLatentBicubic,
+	"latent_bicubic_antialiased": sd.HiresUpscalerLatentBicubicAntialiased,
+	"lanczos":                    sd.HiresUpscalerLanczos,
+	"nearest":                    sd.HiresUpscalerNearest,
+	"model":                      sd.HiresUpscalerModel,
+}
+
 // ContextParams context parameters structure for initializing Stable Diffusion context
 type ContextParams struct {
 	ModelPath                   string     // Full model path
@@ -148,7 +196,10 @@ type ContextParams struct {
 	LLMVisionPath               string     // LLM Vision encoder path
 	DiffusionModelPath          string     // Standalone diffusion model path
 	HighNoiseDiffusionModelPath string     // Standalone high noise diffusion model path
+	UncondDiffusionModelPath    string     // Standalone unconditional diffusion model path
+	EmbeddingsConnectorsPath    string     // Embeddings connectors model path
 	VAEPath                     string     // VAE model path
+	AudioVAEPath                string     // Audio VAE model path (for audio-capable video models)
 	TAESDPath                   string     // TAE-SD model path, uses Tiny AutoEncoder for fast decoding (low quality)
 	ControlNetPath              string     // ControlNet model path
 	Embeddings                  *Embedding // Embedding information
@@ -168,6 +219,7 @@ type ContextParams struct {
 	KeepClipOnCPU               bool       // Keep CLIP on CPU (for low VRAM)
 	KeepControlNetOnCPU         bool       // Keep ControlNet on CPU (for low VRAM)
 	KeepVAEOnCPU                bool       // Keep VAE on CPU (for low VRAM)
+	FlashAttn                   bool       // Use Flash attention across the whole model (significantly reduces memory usage)
 	DiffusionFlashAttn          bool       // Use Flash attention in diffusion model (significantly reduces memory usage)
 	TAEPreviewOnly              bool       // Prevent decoding final image with taesd (for preview="tae")
 	DiffusionConvDirect         bool       // Use Conv2d direct in diffusion model
@@ -179,7 +231,11 @@ type ContextParams struct {
 	ChromaUseT5Mask             bool       // Whether Chroma uses T5 mask
 	ChromaT5MaskPad             int32      // Chroma T5 mask padding size
 	QwenImageZeroCondT          bool       // Qwen-image zero condition T parameter
-	FlowShift                   float32    // Shift value for Flow models (e.g., SD3.x or WAN)
+	VAEFormat                   string     // VAE weight format override: "auto" (default), "flux", "sd3", "flux2"
+	MaxVRAM                     float32    // GiB budget for graph-cut segmented param offload (0 = disabled, -1 = auto: free VRAM minus 1 GiB)
+	StreamLayers                bool       // Stream model weights from CPU during generation (residency+prefetch on top of MaxVRAM; no effect unless MaxVRAM is set)
+	Backend                     string     // Compute backend override (empty = library default)
+	ParamsBackend               string     // Params/storage backend override (empty = library default)
 }
 
 // Lora LoRA structure for defining LoRA model parameters
@@ -233,6 +289,20 @@ type ImgGenParams struct {
 	PMParams           *PMParams         // PhotoMaker parameters
 	VAETilingParams    sd.SDTilingParams // VAE tiling parameters for reducing memory usage
 	CacheParams        sd.SDCacheParams  // Cache parameters for DiT models
+	FlowShift          float32           // Shift value for flow models (e.g. SD3.x, Flux); 0 = library default
+	ExtraSampleArgs    string            // Extra model-specific sampler arguments (advanced)
+
+	// Hi-res fix: optionally run a second high-resolution refinement pass.
+	HiresEnabled           bool      // Enable hi-res fix
+	HiresUpscaler          string    // Hi-res upscaler (see HiresUpscalerMap, e.g. "latent", "model"); empty = "none"
+	HiresModelPath         string    // Upscaler model path (for HiresUpscaler == "model")
+	HiresScale             float32   // Upscale factor (used when target dimensions are unset)
+	HiresTargetWidth       int32     // Explicit hi-res target width (overrides HiresScale)
+	HiresTargetHeight      int32     // Explicit hi-res target height (overrides HiresScale)
+	HiresSteps             int32     // Sample steps for the hi-res pass
+	HiresDenoisingStrength float32   // Denoising strength for the hi-res pass
+	HiresUpscaleTileSize   int32     // Tile size for the hi-res upscale
+	HiresCustomSigmas      []float32 // Custom sigmas for the hi-res pass
 }
 
 // VidGenParams video generation parameters structure for defining video generation related parameters
@@ -262,6 +332,7 @@ type VidGenParams struct {
 	Eta               float32   // Eta in DDIM, only for DDIM and TCD.
 	ShiftedTimestep   int32     // Shift timestep for NitroFusion models, default: 0, recommended N for NitroSD-Realism around 250 and 500 for NitroSD-Vibrant.
 	CustomSigmas      []float32 // Custom sigma values for the sampler, comma-separated (e.g. "14.61,7.8,3.5,0.0").
+	FlowShift         float32   // Shift value for flow models (e.g. SD3.x, Wan); 0 = library default.
 
 	HighNoiseCfgScale          float32   // High noise diffusion model equivalent of `cfg_scale`.
 	HighNoiseImageCfgScale     float32   // High noise diffusion model equivalent of `image_cfg_scale`.
@@ -276,6 +347,7 @@ type VidGenParams struct {
 	HighNoiseEta               float32   // High noise diffusion model equivalent of `eta`.
 	HighNoiseShiftedTimestep   int32     // Shift timestep for NitroFusion models, default: 0, recommended N for NitroSD-Realism around 250 and 500 for NitroSD-Vibrant.
 	HighNoiseCustomSigmas      []float32 // Custom sigma values for the sampler, comma-separated (e.g. "14.61,7.8,3.5,0.0").
+	HighNoiseFlowShift         float32   // High noise diffusion model equivalent of `FlowShift`.
 
 	MOEBoundary  float32          // Timestep boundary for Wan2.2 MoE models
 	Strength     float32          // Noise/denoise strength (range [0.0, 1.0])
@@ -340,8 +412,20 @@ func NewStableDiffusion(ctxParams *ContextParams) (*StableDiffusion, error) {
 		sdCtxParams.HighNoiseDiffusionModelPath = sd.CString(ctxParams.HighNoiseDiffusionModelPath)
 	}
 
+	if ctxParams.UncondDiffusionModelPath != "" {
+		sdCtxParams.UncondDiffusionModelPath = sd.CString(ctxParams.UncondDiffusionModelPath)
+	}
+
+	if ctxParams.EmbeddingsConnectorsPath != "" {
+		sdCtxParams.EmbeddingsConnectorsPath = sd.CString(ctxParams.EmbeddingsConnectorsPath)
+	}
+
 	if ctxParams.VAEPath != "" {
 		sdCtxParams.VAEPath = sd.CString(ctxParams.VAEPath)
+	}
+
+	if ctxParams.AudioVAEPath != "" {
+		sdCtxParams.AudioVAEPath = sd.CString(ctxParams.AudioVAEPath)
 	}
 
 	if ctxParams.TAESDPath != "" {
@@ -423,6 +507,7 @@ func NewStableDiffusion(ctxParams *ContextParams) (*StableDiffusion, error) {
 	sdCtxParams.KeepClipOnCPU = ctxParams.KeepClipOnCPU
 	sdCtxParams.KeepControlNetOnCPU = ctxParams.KeepControlNetOnCPU
 	sdCtxParams.KeepVAEOnCPU = ctxParams.KeepVAEOnCPU
+	sdCtxParams.FlashAttn = ctxParams.FlashAttn
 	sdCtxParams.DiffusionFlashAttn = ctxParams.DiffusionFlashAttn
 	sdCtxParams.TAEPreviewOnly = ctxParams.TAEPreviewOnly
 	sdCtxParams.DiffusionConvDirect = ctxParams.DiffusionConvDirect
@@ -439,8 +524,22 @@ func NewStableDiffusion(ctxParams *ContextParams) (*StableDiffusion, error) {
 
 	sdCtxParams.QwenImageZeroCondT = ctxParams.QwenImageZeroCondT
 
-	if ctxParams.FlowShift != 0 {
-		sdCtxParams.FlowShift = ctxParams.FlowShift
+	if ctxParams.VAEFormat != "" {
+		if vaeFormat, ok := VAEFormatMap[ctxParams.VAEFormat]; ok {
+			sdCtxParams.VAEFormat = vaeFormat
+		} else {
+			return nil, fmt.Errorf("Invalid VAEFormat: %s", ctxParams.VAEFormat)
+		}
+	}
+
+	sdCtxParams.MaxVRAM = ctxParams.MaxVRAM
+	sdCtxParams.StreamLayers = ctxParams.StreamLayers
+
+	if ctxParams.Backend != "" {
+		sdCtxParams.Backend = sd.CString(ctxParams.Backend)
+	}
+	if ctxParams.ParamsBackend != "" {
+		sdCtxParams.ParamsBackend = sd.CString(ctxParams.ParamsBackend)
 	}
 
 	// 2. Create new context
@@ -609,6 +708,8 @@ func (sDiffusion *StableDiffusion) GenerateImage(imgGenParams *ImgGenParams, new
 		ShiftedTimestep:   imgGenParams.ShiftedTimestep,
 		CustomSigmas:      customSigmasPtr,
 		CustomSigmasCount: int32(len(imgGenParams.CustomSigmas)),
+		FlowShift:         flowShiftOrAuto(imgGenParams.FlowShift),
+		ExtraSampleArgs:   sd.CString(imgGenParams.ExtraSampleArgs),
 	}
 
 	if imgGenParams.Strength == 0 {
@@ -670,6 +771,41 @@ func (sDiffusion *StableDiffusion) GenerateImage(imgGenParams *ImgGenParams, new
 		sdImgGenParams.Cache.ReuseThreshold = 0.2
 		sdImgGenParams.Cache.StartPercent = 0.15
 		sdImgGenParams.Cache.EndPercent = 0.95
+	}
+
+	// Hi-res fix: sd_img_gen_params_init already populated sensible (disabled)
+	// Hires defaults; only override when the caller opts in, and only for the
+	// fields they actually set so the library defaults survive for the rest.
+	if imgGenParams.HiresEnabled {
+		sdImgGenParams.Hires.Enabled = true
+		if imgGenParams.HiresUpscaler != "" {
+			if upscaler, ok := HiresUpscalerMap[imgGenParams.HiresUpscaler]; ok {
+				sdImgGenParams.Hires.Upscaler = upscaler
+			} else {
+				return fmt.Errorf("Invalid HiresUpscaler: %s", imgGenParams.HiresUpscaler)
+			}
+		}
+		if imgGenParams.HiresModelPath != "" {
+			sdImgGenParams.Hires.ModelPath = sd.CString(imgGenParams.HiresModelPath)
+		}
+		if imgGenParams.HiresScale != 0 {
+			sdImgGenParams.Hires.Scale = imgGenParams.HiresScale
+		}
+		sdImgGenParams.Hires.TargetWidth = imgGenParams.HiresTargetWidth
+		sdImgGenParams.Hires.TargetHeight = imgGenParams.HiresTargetHeight
+		if imgGenParams.HiresSteps != 0 {
+			sdImgGenParams.Hires.Steps = imgGenParams.HiresSteps
+		}
+		if imgGenParams.HiresDenoisingStrength != 0 {
+			sdImgGenParams.Hires.DenoisingStrength = imgGenParams.HiresDenoisingStrength
+		}
+		if imgGenParams.HiresUpscaleTileSize != 0 {
+			sdImgGenParams.Hires.UpscaleTileSize = imgGenParams.HiresUpscaleTileSize
+		}
+		if len(imgGenParams.HiresCustomSigmas) > 0 {
+			sdImgGenParams.Hires.CustomSigmas = &imgGenParams.HiresCustomSigmas[0]
+			sdImgGenParams.Hires.CustomSigmasCount = int32(len(imgGenParams.HiresCustomSigmas))
+		}
 	}
 
 	// Generate image. The context is intentionally NOT freed here: the model is
@@ -846,6 +982,7 @@ func (sDiffusion *StableDiffusion) GenerateVideo(vidGenParams *VidGenParams, new
 		ShiftedTimestep:   vidGenParams.ShiftedTimestep,
 		CustomSigmas:      customSigmasPtr,
 		CustomSigmasCount: int32(len(vidGenParams.CustomSigmas)),
+		FlowShift:         flowShiftOrAuto(vidGenParams.FlowShift),
 	}
 
 	if vidGenParams.HighNoiseCfgScale == 0 {
@@ -930,6 +1067,7 @@ func (sDiffusion *StableDiffusion) GenerateVideo(vidGenParams *VidGenParams, new
 		ShiftedTimestep:   vidGenParams.HighNoiseShiftedTimestep,
 		CustomSigmas:      highNoiseCustomSigmasPtr,
 		CustomSigmasCount: int32(len(vidGenParams.HighNoiseCustomSigmas)),
+		FlowShift:         flowShiftOrAuto(vidGenParams.HighNoiseFlowShift),
 	}
 
 	if vidGenParams.MOEBoundary == 0 {
@@ -1004,6 +1142,8 @@ type UpscalerParams struct {
 	Direct             bool   // Whether to use direct mode
 	NThreads           int    // Number of threads to use
 	TileSize           int    // Tile size
+	Backend            string // Compute backend override (empty = library default)
+	ParamsBackend      string // Params/storage backend override (empty = library default)
 }
 
 type Upscaler struct {
@@ -1026,6 +1166,8 @@ func NewUpscaler(params *UpscalerParams) *Upscaler {
 		params.Direct,
 		params.NThreads,
 		params.TileSize,
+		params.Backend,
+		params.ParamsBackend,
 	)
 	return &Upscaler{ctx: ctx}
 }

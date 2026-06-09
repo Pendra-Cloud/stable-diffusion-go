@@ -34,7 +34,13 @@ func TestEnumABIValues(t *testing.T) {
 		{"LCMSampleMethod", int32(LCMSampleMethod), 9},
 		{"DDIMTrailingSampleMethod", int32(DDIMTrailingSampleMethod), 10},
 		{"TCDSampleMethod", int32(TCDSampleMethod), 11},
-		{"SampleMethodCount", int32(SampleMethodCount), 12},
+		{"ResMultistepSampleMethod", int32(ResMultistepSampleMethod), 12},
+		{"Res2SSampleMethod", int32(Res2SSampleMethod), 13},
+		{"ERSDESampleMethod", int32(ERSDESampleMethod), 14},
+		{"EulerCFGPPSampleMethod", int32(EulerCFGPPSampleMethod), 15},
+		{"EulerACFGPPSampleMethod", int32(EulerACFGPPSampleMethod), 16},
+		{"EulerGESampleMethod", int32(EulerGESampleMethod), 17},
+		{"SampleMethodCount", int32(SampleMethodCount), 18},
 
 		// scheduler_t
 		{"DiscreteScheduler", int32(DiscreteScheduler), 0},
@@ -47,7 +53,9 @@ func TestEnumABIValues(t *testing.T) {
 		{"SmoothstepScheduler", int32(SmoothstepScheduler), 7},
 		{"KLOptimalScheduler", int32(KLOptimalScheduler), 8},
 		{"LCMScheduler", int32(LCMScheduler), 9},
-		{"SchedulerCount", int32(SchedulerCount), 10},
+		{"BongTangentScheduler", int32(BongTangentScheduler), 10},
+		{"LTX2Scheduler", int32(LTX2Scheduler), 11},
+		{"SchedulerCount", int32(SchedulerCount), 12},
 
 		// prediction_t
 		{"EPSPred", int32(EPSPred), 0},
@@ -84,6 +92,7 @@ func TestEnumABIValues(t *testing.T) {
 		{"SDCacheDbcache", int32(SDCacheDbcache), 3},
 		{"SDCacheTaylorseer", int32(SDCacheTaylorseer), 4},
 		{"SDCacheCacheDit", int32(SDCacheCacheDit), 5},
+		{"SDCacheSpectrum", int32(SDCacheSpectrum), 6},
 
 		// sd_type_t — spot-check the explicitly numbered values, including the
 		// ones after the removed-quant-type gaps where iota would be wrong.
@@ -97,7 +106,29 @@ func TestEnumABIValues(t *testing.T) {
 		{"SDTypeBF16", int32(SDTypeBF16), 30},
 		{"SDTypeTQ1_0", int32(SDTypeTQ1_0), 34},
 		{"SDTypeMXFP4", int32(SDTypeMXFP4), 39},
-		{"SDTypeCount", int32(SDTypeCount), 40},
+		{"SDTypeNVFP4", int32(SDTypeNVFP4), 40},
+		{"SDTypeQ1_0", int32(SDTypeQ1_0), 41},
+		{"SDTypeCount", int32(SDTypeCount), 42},
+
+		// sd_vae_format_t — note AUTO is -1.
+		{"VAEFormatAuto", int32(VAEFormatAuto), -1},
+		{"FluxVAEFormat", int32(FluxVAEFormat), 0},
+		{"SD3VAEFormat", int32(SD3VAEFormat), 1},
+		{"Flux2VAEFormat", int32(Flux2VAEFormat), 2},
+		{"VAEFormatCount", int32(VAEFormatCount), 3},
+
+		// sd_hires_upscaler_t
+		{"HiresUpscalerNone", int32(HiresUpscalerNone), 0},
+		{"HiresUpscalerLatent", int32(HiresUpscalerLatent), 1},
+		{"HiresUpscalerLatentNearest", int32(HiresUpscalerLatentNearest), 2},
+		{"HiresUpscalerLatentNearestExact", int32(HiresUpscalerLatentNearestExact), 3},
+		{"HiresUpscalerLatentAntialiased", int32(HiresUpscalerLatentAntialiased), 4},
+		{"HiresUpscalerLatentBicubic", int32(HiresUpscalerLatentBicubic), 5},
+		{"HiresUpscalerLatentBicubicAntialiased", int32(HiresUpscalerLatentBicubicAntialiased), 6},
+		{"HiresUpscalerLanczos", int32(HiresUpscalerLanczos), 7},
+		{"HiresUpscalerNearest", int32(HiresUpscalerNearest), 8},
+		{"HiresUpscalerModel", int32(HiresUpscalerModel), 9},
+		{"HiresUpscalerCount", int32(HiresUpscalerCount), 10},
 	}
 
 	for _, c := range cases {

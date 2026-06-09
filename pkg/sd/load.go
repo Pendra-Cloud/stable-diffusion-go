@@ -170,4 +170,10 @@ func registerFunctions() {
 	purego.RegisterLibFunc(&preprocessCanny, libSD, "preprocess_canny")
 	purego.RegisterLibFunc(&sdCommit, libSD, "sd_commit")
 	purego.RegisterLibFunc(&sdVersion, libSD, "sd_version")
+	purego.RegisterLibFunc(&sdCtxSupportsImageGeneration, libSD, "sd_ctx_supports_image_generation")
+	purego.RegisterLibFunc(&sdCtxSupportsVideoGeneration, libSD, "sd_ctx_supports_video_generation")
+	purego.RegisterLibFunc(&sdHiresUpscalerName, libSD, "sd_hires_upscaler_name")
+	purego.RegisterLibFunc(&strToSDHiresUpscaler, libSD, "str_to_sd_hires_upscaler")
+	purego.RegisterLibFunc(&sdHiresParamsInit, libSD, "sd_hires_params_init")
+	purego.RegisterLibFunc(&freeSDAudio, libSD, "free_sd_audio")
 }
