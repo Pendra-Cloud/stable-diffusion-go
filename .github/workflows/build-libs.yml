@@ -317,8 +317,16 @@ jobs:
         working-directory: upstream
         run: |
           set -euo pipefail
+          # GGML_CUDA_NCCL defaults ON in ggml; the nvidia/cuda devel image ships
+          # NCCL, so cmake auto-links it and the resulting libstable-diffusion.so
+          # gains a hard libnccl.so.2 NEEDED dep. NCCL is multi-GPU collective
+          # comms only — never used for single-GPU/single-context image (or
+          # video) generation — and libnccl2 is a separate package absent on many
+          # otherwise-fine CUDA hosts, so that dep makes the lib fail to dlopen on
+          # a clean install. Disable it: this build is single-GPU inference.
           cmake -S . -B build -G Ninja $SD_BASE_FLAGS \
             -DSD_CUDA=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
+            -DGGML_CUDA_NCCL=OFF \
             -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHS}"
           cmake --build build --config Release -j
       - name: Locate library
@@ -330,6 +338,18 @@ jobs:
           echo "path=$so" >> "$GITHUB_OUTPUT"
       - name: Verify exported symbols (fail-closed)
         run: scripts/check-symbols.sh "${{ steps.lib.outputs.path }}" lib/expected-symbols.txt
+      - name: Verify no NCCL runtime dependency (fail-closed)
+        run: |
+          set -euo pipefail
+          # Guard against GGML_CUDA_NCCL silently turning back on (toolkit/default
+          # change): the CUDA lib must not carry a libnccl NEEDED entry, or it
+          # won't load on hosts without libnccl2 installed.
+          if readelf -d "${{ steps.lib.outputs.path }}" | grep -qi 'NEEDED.*libnccl'; then
+            echo "ERROR: libstable-diffusion.so links libnccl — rebuild with -DGGML_CUDA_NCCL=OFF" >&2
+            readelf -d "${{ steps.lib.outputs.path }}" | grep -i needed >&2
+            exit 1
+          fi
+          echo "OK: no libnccl NEEDED dependency"
       - name: Package archive
         run: |
           set -euo pipefail
@@ -409,7 +429,7 @@ jobs:
           - { subdir: avx, kind: cpu, flags: "-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF" }
           - { subdir: noavx, kind: cpu, flags: "-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF" }
           - { subdir: vulkan, kind: vulkan, flags: "-DSD_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON" }
-          - { subdir: cuda12, kind: cuda, flags: "-DSD_CUDA=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON" }
+          - { subdir: cuda12, kind: cuda, flags: "-DSD_CUDA=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_CUDA_NCCL=OFF" }
     defaults:
       run:
         shell: pwsh
