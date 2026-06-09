@@ -70,12 +70,18 @@ env:
   CUDA_ARCHS_WINDOWS: "86-real;89-real;120"
   # Shared base flags for every variant. Hidden visibility + static ggml is the
   # isolation mechanism; SD_API (default visibility) re-exports only sd_*.
+  # SD_WEBP/SD_WEBM are forced OFF: upstream vendors them as submodules that
+  # clone-upstream.sh inits recursively, which would otherwise default them ON.
+  # The Go binding handles image I/O itself (PNG via stdlib), so we keep the
+  # build lean and avoid the extra codec compile.
   SD_BASE_FLAGS: >-
     -DCMAKE_BUILD_TYPE=Release
     -DSD_BUILD_SHARED_LIBS=ON
     -DSD_BUILD_SHARED_GGML_LIB=OFF
     -DSD_BUILD_EXAMPLES=OFF
     -DGGML_BACKEND_DL=OFF
+    -DSD_WEBP=OFF
+    -DSD_WEBM=OFF
     -DCMAKE_C_VISIBILITY_PRESET=hidden
     -DCMAKE_CXX_VISIBILITY_PRESET=hidden
     -DCMAKE_CUDA_VISIBILITY_PRESET=hidden
@@ -581,6 +587,15 @@ jobs:
           (avx2/avx512/avx/noavx/vulkan/cuda12) subdir tree the binding selects from.
           EOF
           )"
+          # Splice in the merged PR's description so authored release notes reach
+          # the published release: --generate-notes only carries PR *titles* (the
+          # "What's Changed" list), never bodies. Resolve the PR for this merge
+          # commit and append its body; harmless no-op for direct pushes / no PR.
+          pr_body="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+                      --jq '.[0].body // ""' 2>/dev/null || true)"
+          if [ -n "$pr_body" ]; then
+            notes="${notes}"$'\n\n'"${pr_body}"
+          fi
           if gh release view "$VERSION" >/dev/null 2>&1; then
             gh release upload "$VERSION" dist/stable-diffusion-libs-*.tar.gz dist/checksums.txt --clobber
           else

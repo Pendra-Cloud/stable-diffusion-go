@@ -30,6 +30,12 @@ const (
 	LCMSampleMethod
 	DDIMTrailingSampleMethod
 	TCDSampleMethod
+	ResMultistepSampleMethod
+	Res2SSampleMethod
+	ERSDESampleMethod
+	EulerCFGPPSampleMethod
+	EulerACFGPPSampleMethod
+	EulerGESampleMethod
 	SampleMethodCount
 )
 
@@ -46,6 +52,8 @@ const (
 	SmoothstepScheduler
 	KLOptimalScheduler
 	LCMScheduler
+	BongTangentScheduler
+	LTX2Scheduler
 	SchedulerCount
 )
 
@@ -104,7 +112,9 @@ const (
 	// SDTypeIQ4_NL_4_8 = 37,
 	// SDTypeIQ4_NL_8_8 = 38,
 	SDTypeMXFP4 = 39
-	SDTypeCount = 40
+	SDTypeNVFP4 = 40 // NVFP4 (4 blocks, E4M3 scale)
+	SDTypeQ1_0  = 41
+	SDTypeCount = 42
 )
 
 type SDLogLevel int32
@@ -144,16 +154,45 @@ const (
 	SDCacheDbcache
 	SDCacheTaylorseer
 	SDCacheCacheDit
+	SDCacheSpectrum
+)
+
+type SDVAEFormat int32
+
+const (
+	VAEFormatAuto  SDVAEFormat = -1
+	FluxVAEFormat  SDVAEFormat = 0
+	SD3VAEFormat   SDVAEFormat = 1
+	Flux2VAEFormat SDVAEFormat = 2
+	VAEFormatCount SDVAEFormat = 3
+)
+
+type SDHiresUpscaler int32
+
+const (
+	HiresUpscalerNone SDHiresUpscaler = iota
+	HiresUpscalerLatent
+	HiresUpscalerLatentNearest
+	HiresUpscalerLatentNearestExact
+	HiresUpscalerLatentAntialiased
+	HiresUpscalerLatentBicubic
+	HiresUpscalerLatentBicubicAntialiased
+	HiresUpscalerLanczos
+	HiresUpscalerNearest
+	HiresUpscalerModel
+	HiresUpscalerCount
 )
 
 // Define structs
 type SDTilingParams struct {
-	Enabled       bool
-	TileSizeX     int32
-	TileSizeY     int32
-	TargetOverlap float32
-	RelSizeX      float32
-	RelSizeY      float32
+	Enabled         bool
+	TemporalTiling  bool
+	TileSizeX       int32
+	TileSizeY       int32
+	TargetOverlap   float32
+	RelSizeX        float32
+	RelSizeY        float32
+	ExtraTilingArgs *uint8
 }
 
 type SDEmbedding struct {
@@ -171,7 +210,10 @@ type SDContextParams struct {
 	LLMVisionPath               *uint8
 	DiffusionModelPath          *uint8
 	HighNoiseDiffusionModelPath *uint8
+	UncondDiffusionModelPath    *uint8
+	EmbeddingsConnectorsPath    *uint8
 	VAEPath                     *uint8
+	AudioVAEPath                *uint8
 	TAESDPath                   *uint8
 	ControlNetPath              *uint8
 	Embeddings                  *SDEmbedding
@@ -191,6 +233,7 @@ type SDContextParams struct {
 	KeepClipOnCPU               bool
 	KeepControlNetOnCPU         bool
 	KeepVAEOnCPU                bool
+	FlashAttn                   bool
 	DiffusionFlashAttn          bool
 	TAEPreviewOnly              bool
 	DiffusionConvDirect         bool
@@ -202,7 +245,11 @@ type SDContextParams struct {
 	ChromaUseT5Mask             bool
 	ChromaT5MaskPad             int32
 	QwenImageZeroCondT          bool
-	FlowShift                   float32
+	VAEFormat                   SDVAEFormat
+	MaxVRAM                     float32
+	StreamLayers                bool
+	Backend                     *uint8
+	ParamsBackend               *uint8
 }
 
 type SDImage struct {
@@ -236,6 +283,8 @@ type SDSampleParams struct {
 	ShiftedTimestep   int32
 	CustomSigmas      *float32
 	CustomSigmasCount int32
+	FlowShift         float32
+	ExtraSampleArgs   *uint8
 }
 
 type SDPMParams struct {
@@ -263,12 +312,42 @@ type SDCacheParams struct {
 	TaylorseerSkipInterval   int32
 	ScmMask                  *uint8
 	ScmPolicyDynamic         bool
+	SpectrumW                float32
+	SpectrumM                int32
+	SpectrumLam              float32
+	SpectrumWindowSize       int32
+	SpectrumFlexWindow       float32
+	SpectrumWarmupSteps      int32
+	SpectrumStopPercent      float32
 }
 
 type SDLora struct {
 	IsHighNoise bool
 	Multiplier  float32
 	Path        *uint8
+}
+
+type SDHiresParams struct {
+	Enabled           bool
+	Upscaler          SDHiresUpscaler
+	ModelPath         *uint8
+	Scale             float32
+	TargetWidth       int32
+	TargetHeight      int32
+	Steps             int32
+	DenoisingStrength float32
+	UpscaleTileSize   int32
+	CustomSigmas      *float32
+	CustomSigmasCount int32
+}
+
+// SDAudio mirrors sd_audio_t. It is returned by generate_video for audio-capable
+// video models (e.g. LTX2); the image path does not produce it.
+type SDAudio struct {
+	SampleRate  uint32
+	Channels    uint32
+	SampleCount uint64
+	Data        *float32
 }
 
 type SDImgGenParams struct {
@@ -294,6 +373,7 @@ type SDImgGenParams struct {
 	PMParams           SDPMParams
 	VAETilingParams    SDTilingParams
 	Cache              SDCacheParams
+	Hires              SDHiresParams
 }
 
 type SDVidGenParams struct {
@@ -314,8 +394,11 @@ type SDVidGenParams struct {
 	Strength              float32
 	Seed                  int64
 	VideoFrames           int32
+	Fps                   int32
 	VaceStrength          float32
+	VAETilingParams       SDTilingParams
 	Cache                 SDCacheParams
+	Hires                 SDHiresParams
 }
 
 // Define context types
@@ -366,8 +449,8 @@ var (
 	sdImgGenParamsToStr      func(params *SDImgGenParams) *uint8
 	generateImage            func(ctx unsafe.Pointer, params *SDImgGenParams) *SDImage
 	sdVidGenParamsInit       func(params *SDVidGenParams)
-	generateVideo            func(ctx unsafe.Pointer, params *SDVidGenParams, numFramesOut *int32) *SDImage
-	newUpscalerContext       func(esrganPath *uint8, offloadParamsToCPU bool, direct bool, nThreads int32, tileSize int32) unsafe.Pointer
+	generateVideo            func(ctx unsafe.Pointer, params *SDVidGenParams, framesOut **SDImage, numFramesOut *int32, audioOut **SDAudio) bool
+	newUpscalerContext       func(esrganPath *uint8, offloadParamsToCPU bool, direct bool, nThreads int32, tileSize int32, backend *uint8, paramsBackend *uint8) unsafe.Pointer
 	freeUpscalerContext      func(ctx unsafe.Pointer)
 	upscale                  func(ctx unsafe.Pointer, inputImage *SDImage, upscaleFactor uint32) *SDImage
 	getUpscaleFactor         func(ctx unsafe.Pointer) int32
@@ -375,6 +458,13 @@ var (
 	preprocessCanny          func(image *SDImage, highThreshold float32, lowThreshold float32, weak float32, strong float32, inverse bool) bool
 	sdCommit                 func() *uint8
 	sdVersion                func() *uint8
+
+	sdCtxSupportsImageGeneration func(ctx unsafe.Pointer) bool
+	sdCtxSupportsVideoGeneration func(ctx unsafe.Pointer) bool
+	sdHiresUpscalerName          func(upscaler SDHiresUpscaler) *uint8
+	strToSDHiresUpscaler         func(str *uint8) SDHiresUpscaler
+	sdHiresParamsInit            func(params *SDHiresParams)
+	freeSDAudio                  func(audio *SDAudio)
 )
 
 // The shared library is loaded lazily via Load (see load.go); importing this
@@ -596,11 +686,23 @@ func VidGenParamsInit(params *SDVidGenParams) {
 	sdVidGenParamsInit(params)
 }
 
-// GenerateVideo generates video
+// GenerateVideo generates video. As of the upstream resync, generate_video
+// returns a success bool and also yields an audio buffer for audio-capable
+// models (e.g. LTX2). This binding does not surface audio, so the buffer is
+// freed immediately; the public ([]SDImage, int) signature is unchanged so
+// existing callers keep working.
 func (ctx *SDContext) GenerateVideo(params *SDVidGenParams) ([]SDImage, int) {
-	var numFrames int32
-	framesPtr := generateVideo(ctx.ptr, params, &numFrames)
-	if framesPtr == nil {
+	var (
+		framesPtr *SDImage
+		numFrames int32
+		audioPtr  *SDAudio
+	)
+
+	ok := generateVideo(ctx.ptr, params, &framesPtr, &numFrames, &audioPtr)
+	if audioPtr != nil && freeSDAudio != nil {
+		freeSDAudio(audioPtr)
+	}
+	if !ok || framesPtr == nil {
 		return nil, 0
 	}
 
@@ -612,12 +714,17 @@ func (ctx *SDContext) GenerateVideo(params *SDVidGenParams) ([]SDImage, int) {
 	return frames, int(numFrames)
 }
 
-// NewUpscalerContext creates a new upscaler context
-func NewUpscalerContext(esrganPath string, offloadParamsToCPU bool, direct bool, nThreads int, tileSize int) *UpscalerContext {
+// NewUpscalerContext creates a new upscaler context. backend and paramsBackend
+// select the runtime backend; empty strings fall back to the library default.
+func NewUpscalerContext(esrganPath string, offloadParamsToCPU bool, direct bool, nThreads int, tileSize int, backend string, paramsBackend string) *UpscalerContext {
 	cPath := CString(esrganPath)
+	cBackend := CString(backend)
+	cParamsBackend := CString(paramsBackend)
 	defer FreeCString(cPath)
+	defer FreeCString(cBackend)
+	defer FreeCString(cParamsBackend)
 
-	ptr := newUpscalerContext(cPath, offloadParamsToCPU, direct, int32(nThreads), int32(tileSize))
+	ptr := newUpscalerContext(cPath, offloadParamsToCPU, direct, int32(nThreads), int32(tileSize), cBackend, cParamsBackend)
 	return &UpscalerContext{ptr: ptr}
 }
 
@@ -669,6 +776,43 @@ func Commit() string {
 // Version gets version information
 func Version() string {
 	return CGoString(sdVersion())
+}
+
+// HiresParamsInit initializes hi-res fix parameters with library defaults.
+func HiresParamsInit(params *SDHiresParams) {
+	sdHiresParamsInit(params)
+}
+
+// SDHiresUpscalerName gets the hi-res upscaler name.
+func SDHiresUpscalerName(upscaler SDHiresUpscaler) string {
+	return CGoString(sdHiresUpscalerName(upscaler))
+}
+
+// StrToSDHiresUpscaler converts a string to a hi-res upscaler.
+func StrToSDHiresUpscaler(str string) SDHiresUpscaler {
+	cStr := CString(str)
+	defer FreeCString(cStr)
+	return strToSDHiresUpscaler(cStr)
+}
+
+// SupportsImageGeneration reports whether the loaded model can generate images.
+func (ctx *SDContext) SupportsImageGeneration() bool {
+	return sdCtxSupportsImageGeneration(ctx.ptr)
+}
+
+// SupportsVideoGeneration reports whether the loaded model can generate video.
+func (ctx *SDContext) SupportsVideoGeneration() bool {
+	return sdCtxSupportsVideoGeneration(ctx.ptr)
+}
+
+// FreeAudio releases a native audio buffer returned by generate_video. It is
+// safe to call with a nil audio or when the native binding is unavailable (the
+// library has not been loaded / the symbol was not registered), in which case
+// it does nothing — consistent with FreeImage/FreeImages.
+func FreeAudio(audio *SDAudio) {
+	if audio != nil && freeSDAudio != nil {
+		freeSDAudio(audio)
+	}
 }
 
 // Helper function: Convert C string to Go string
