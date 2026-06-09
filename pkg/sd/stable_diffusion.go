@@ -805,9 +805,12 @@ func (ctx *SDContext) SupportsVideoGeneration() bool {
 	return sdCtxSupportsVideoGeneration(ctx.ptr)
 }
 
-// FreeAudio releases a native audio buffer returned by generate_video.
+// FreeAudio releases a native audio buffer returned by generate_video. It is
+// safe to call with a nil audio or when the native binding is unavailable (the
+// library has not been loaded / the symbol was not registered), in which case
+// it does nothing — consistent with FreeImage/FreeImages.
 func FreeAudio(audio *SDAudio) {
-	if audio != nil {
+	if audio != nil && freeSDAudio != nil {
 		freeSDAudio(audio)
 	}
 }

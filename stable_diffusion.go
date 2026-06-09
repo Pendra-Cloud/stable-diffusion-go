@@ -791,8 +791,12 @@ func (sDiffusion *StableDiffusion) GenerateImage(imgGenParams *ImgGenParams, new
 		if imgGenParams.HiresScale != 0 {
 			sdImgGenParams.Hires.Scale = imgGenParams.HiresScale
 		}
-		sdImgGenParams.Hires.TargetWidth = imgGenParams.HiresTargetWidth
-		sdImgGenParams.Hires.TargetHeight = imgGenParams.HiresTargetHeight
+		if imgGenParams.HiresTargetWidth != 0 {
+			sdImgGenParams.Hires.TargetWidth = imgGenParams.HiresTargetWidth
+		}
+		if imgGenParams.HiresTargetHeight != 0 {
+			sdImgGenParams.Hires.TargetHeight = imgGenParams.HiresTargetHeight
+		}
 		if imgGenParams.HiresSteps != 0 {
 			sdImgGenParams.Hires.Steps = imgGenParams.HiresSteps
 		}
