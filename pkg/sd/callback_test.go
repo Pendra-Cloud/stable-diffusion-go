@@ -52,32 +52,37 @@ func TestCallbackSignaturesAcceptedByPurego(t *testing.T) {
 	mustWrap(t, "SDPreviewCallback", previewCB)
 }
 
-// TestProgressCallbackUnsupportedOnWindows documents and locks in a SEPARATE,
-// pre-existing limitation surfaced by the work above: SDProgressCallback takes
-// a `float32` argument, and Windows' syscall.NewCallback (which purego uses)
-// supports neither float arguments nor float returns. So the progress callback
-// can never be wrapped on Windows, regardless of its return type — it panics
-// with "float arguments not supported". This is independent of the
-// image-generation fix (the worker registers only the log callback) and would
-// require dropping the float from the C-ABI signature to lift. We assert the
-// status quo so a future change to SetProgressCallback's Windows behaviour is a
-// deliberate, visible decision.
-func TestProgressCallbackUnsupportedOnWindows(t *testing.T) {
+// TestSetProgressCallbackNoPanicOnWindows verifies the graceful handling of a
+// SEPARATE, pre-existing limitation surfaced by the work above: SDProgressCallback
+// takes a `float32` argument, and Windows' syscall.NewCallback (purego's backend
+// there) supports neither float arguments nor float returns. Rather than leave a
+// latent panic ("float arguments not supported"), SetProgressCallback skips
+// registration on Windows. This test asserts that registering a progress
+// callback on Windows does NOT panic. It runs only on Windows; the no-op path
+// returns before touching the (lib-loaded) purego symbol, so no native library
+// is required.
+func TestSetProgressCallbackNoPanicOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific: progress-callback registration is skipped on Windows")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("SetProgressCallback panicked on Windows; expected a graceful no-op: %v", r)
+		}
+	}()
+	SetProgressCallback(func(step, steps int, tm float32, data interface{}) {}, nil)
+}
+
+// TestProgressCallbackWrapsOffWindows confirms that off Windows (where purego
+// supports float callback args) the progress callback type — with its uintptr
+// return — still wraps cleanly via purego.NewCallback.
+func TestProgressCallbackWrapsOffWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("float-arg callbacks aren't wrappable on Windows; see TestSetProgressCallbackNoPanicOnWindows")
+	}
 	var progressCB SDProgressCallback = func(step, steps int32, tm float32, data unsafe.Pointer) uintptr {
 		return 0
 	}
-
-	if runtime.GOOS == "windows" {
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("expected purego.NewCallback(SDProgressCallback) to panic on Windows (float arg); it did not — update this test if the limitation was lifted")
-			}
-		}()
-		_ = purego.NewCallback(progressCB)
-		return
-	}
-
-	// Everywhere else the float arg is fine and the uintptr return is accepted.
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("purego.NewCallback(SDProgressCallback) panicked off-Windows: %v", r)

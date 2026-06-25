@@ -1,6 +1,7 @@
 package sd
 
 import (
+	"runtime"
 	"unsafe"
 )
 
@@ -427,11 +428,12 @@ type SDLogCallback func(level SDLogLevel, text *uint8, data unsafe.Pointer) uint
 
 // SDProgressCallback NOTE (Windows): this callback takes a float32 argument.
 // purego's callback support on Windows is syscall.NewCallback, which supports
-// neither float arguments nor float returns — so SetProgressCallback cannot be
-// installed on Windows and will panic ("float arguments not supported") if
-// called there. The log and preview callbacks have no float in their
-// signatures and work on every platform. Lifting this would require removing
-// the float from the C-ABI signature.
+// neither float arguments nor float returns — so this callback cannot be
+// wrapped on Windows. SetProgressCallback handles that gracefully (it skips
+// registration on Windows rather than panicking), so progress reporting is
+// simply unavailable there. The log and preview callbacks have no float in
+// their signatures and work on every platform. Lifting this would require
+// removing the float from the C-ABI signature.
 type SDProgressCallback func(step int32, steps int32, time float32, data unsafe.Pointer) uintptr
 type SDPreviewCallback func(step int32, frameCount int32, frames *SDImage, isNoisy bool, data unsafe.Pointer) uintptr
 
@@ -513,10 +515,25 @@ func SetLogCallback(cb SDLogCallbackType, data interface{}) {
 	sdSetLogCallback(cCallback, nil)
 }
 
-// SetProgressCallback sets progress callback
+// SetProgressCallback sets progress callback.
+//
+// Windows limitation (handled gracefully): the C progress callback takes a
+// `float` argument, and Windows' syscall.NewCallback — which purego uses to
+// turn a Go func into a C callback there — supports neither float arguments
+// nor float returns. Registering a progress callback on Windows would panic
+// ("float arguments not supported"). Rather than leave that as a latent crash,
+// SetProgressCallback is a no-op for a non-nil cb on Windows: progress
+// reporting is simply unavailable there. Clearing (cb == nil) still works on
+// every platform. The log and preview callbacks have no float in their
+// signatures and work everywhere.
 func SetProgressCallback(cb func(step int, steps int, time float32, data interface{}), data interface{}) {
 	if cb == nil {
 		sdSetProgressCallback(nil, nil)
+		return
+	}
+	if runtime.GOOS == "windows" {
+		// Can't wrap a float-arg callback on Windows; skip registration
+		// instead of panicking. (See the doc comment above.)
 		return
 	}
 
