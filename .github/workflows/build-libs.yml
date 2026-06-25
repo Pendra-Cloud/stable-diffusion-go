@@ -539,10 +539,13 @@ jobs:
           $ErrorActionPreference = "Stop"
           $expected = Get-Content lib/expected-symbols.txt | Where-Object { $_.Trim() -ne "" } | ForEach-Object { $_.Trim() }
           $dlls = Get-ChildItem -Path stage -Recurse -Filter "stable-diffusion.dll"
-          # Require the 5 mandatory variants (avx2/avx512/avx/noavx/vulkan). The
-          # cuda13 leg is best-effort (continue-on-error), so 5 or 6 DLLs are both
-          # valid — only fewer than 5 means a mandatory CPU/Vulkan variant failed.
-          if ($dlls.Count -lt 5) { throw "expected at least 5 Windows variant DLLs (cuda13 optional), found $($dlls.Count)" }
+          # Require each mandatory variant's DLL by subdir name (a bare count can
+          # be fooled: the best-effort cuda13 leg succeeding while a mandatory leg
+          # fails still yields 5 DLLs). cuda13 is optional (continue-on-error).
+          $mandatory = @("avx2", "avx512", "avx", "noavx", "vulkan")
+          $present = $dlls | ForEach-Object { Split-Path (Split-Path $_.FullName -Parent) -Leaf }
+          $missing = $mandatory | Where-Object { $present -notcontains $_ }
+          if ($missing) { throw "missing mandatory Windows variant DLL(s): $($missing -join ', ')" }
           $fail = $false
           $dlls | ForEach-Object {
             $dll = $_.FullName
