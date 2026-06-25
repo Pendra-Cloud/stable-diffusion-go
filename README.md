@@ -54,7 +54,7 @@ linked, with hidden visibility so only the `stable-diffusion.cpp` symbols are
 exported and the embedded `ggml` symbols stay local — they won't collide with
 another in-process library that has its own `ggml`). The Windows archive
 contains the GPU/CPU variant subdirectories the loader selects from
-(`avx2/`, `avx512/`, `avx/`, `noavx/`, `vulkan/`, `cuda12/`); extract it whole
+(`avx2/`, `avx512/`, `avx/`, `noavx/`, `vulkan/`, `cuda13/`); extract it whole
 and point `Load` at its root. CUDA archives need a host CUDA runtime; Vulkan
 archives need a Vulkan loader/ICD.
 
@@ -92,7 +92,7 @@ if err := stablediffusion.Load(""); err != nil {
 }
 ```
 
-On Windows, GPU/CPU variant subdirectories (`cuda12/`, `rocm/`, `vulkan/`,
+On Windows, GPU/CPU variant subdirectories (`cuda13/`, `rocm/`, `vulkan/`,
 `avx2/`, …) are resolved within the supplied directory.
 
 ## Quick start

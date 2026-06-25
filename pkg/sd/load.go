@@ -60,7 +60,7 @@ func windowsLibCandidates(libDir, name string) []string {
 	} else if gpu, err := GetGPUName(); err == nil {
 		switch gpu {
 		case "NVIDIA":
-			candidates = append(candidates, filepath.Join(libDir, "cuda12", name))
+			candidates = append(candidates, filepath.Join(libDir, "cuda13", name))
 		case "AMD":
 			candidates = append(candidates, filepath.Join(libDir, "rocm", name))
 		}
