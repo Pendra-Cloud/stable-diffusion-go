@@ -53,11 +53,15 @@ permissions:
 
 env:
   SD_UPSTREAM: leejet/stable-diffusion.cpp
-  # Windows CUDA toolkit version, installed via the Jimver action (pinned to a
-  # recent release whose version map resolves current CUDA network packages).
-  # 12.8+ covers the full Turing→Blackwell arch list (sm_100/sm_120). The Linux
-  # CUDA build is independent (nvidia/cuda:13.0.0 devel container).
-  CUDA_WINDOWS_VERSION: "12.9.1"
+  # Windows CUDA toolkit version, installed via the Jimver action. Aligned with
+  # the Linux CUDA build (nvidia/cuda:13.0.0 devel container) so both platforms
+  # ship the same CUDA major — the worker's CUDA runtime requirement is CUDA 13
+  # (libcudart.so.13). The Windows CUDA leg pins runs-on to windows-2022 (below)
+  # because CUDA 13's nvcc only accepts up to the VS2022 host compiler; the
+  # default windows-latest image now ships VS18 / MSVC 14.51, which nvcc rejects
+  # ("unsupported Microsoft Visual Studio version"). The leg is also best-effort
+  # (continue-on-error) so a future host/CUDA mismatch can never block a release.
+  CUDA_WINDOWS_VERSION: "13.0.0"
   # Turing→Blackwell. Pascal/Volta (sm_61/sm_70) are intentionally dropped.
   # Used by the Linux CUDA build (container, fast nvcc).
   CUDA_ARCHS: "75;80;86;89;90;100;120"
@@ -410,7 +414,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Windows — the binding selects a per-variant SUBDIR within the lib dir
-  # (avx512/ avx2/ avx/ noavx/ for CPU, cuda12/ vulkan/ for GPU; see
+  # (avx512/ avx2/ avx/ noavx/ for CPU, cuda13/ vulkan/ for GPU; see
   # windowsLibCandidates in pkg/sd/load.go). Each variant builds as its own
   # matrix leg in parallel (installing only the toolchain it needs); the
   # windows_assemble job then merges them into ONE archive carrying that subdir
@@ -419,7 +423,17 @@ jobs:
   windows:
     needs: setup
     if: ${{ needs.setup.outputs.run_windows == 'true' && needs.setup.outputs.skip != 'true' }}
-    runs-on: windows-latest
+    # Per-leg runner: the CPU/Vulkan variants build on windows-latest, but the
+    # CUDA leg pins windows-2022 so nvcc gets a VS2022 host compiler it supports
+    # (windows-latest now ships VS18 / MSVC 14.51, which CUDA 13's nvcc rejects).
+    runs-on: ${{ matrix.runner || 'windows-latest' }}
+    # The CUDA leg is best-effort: nothing Pendra ships bundles Windows CUDA SD
+    # (NVIDIA-on-Windows uses the Vulkan build; cudart is a separate ~half-GiB
+    # non-redistributable download), and a host/CUDA toolchain mismatch must
+    # never block the release. continue-on-error keeps a cuda13 build failure
+    # from failing the job (so windows_assemble + release still run); the
+    # assemble step treats the cuda13 DLL as optional.
+    continue-on-error: ${{ matrix.optional || false }}
     strategy:
       fail-fast: false
       matrix:
@@ -429,7 +443,7 @@ jobs:
           - { subdir: avx, kind: cpu, flags: "-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF" }
           - { subdir: noavx, kind: cpu, flags: "-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF" }
           - { subdir: vulkan, kind: vulkan, flags: "-DSD_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON" }
-          - { subdir: cuda12, kind: cuda, flags: "-DSD_CUDA=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_CUDA_NCCL=OFF" }
+          - { subdir: cuda13, kind: cuda, runner: windows-2022, optional: true, flags: "-DSD_CUDA=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_CUDA_NCCL=OFF" }
     defaults:
       run:
         shell: pwsh
@@ -500,7 +514,12 @@ jobs:
   # ---------------------------------------------------------------------------
   windows_assemble:
     needs: [setup, windows]
-    if: ${{ needs.setup.outputs.run_windows == 'true' && needs.setup.outputs.skip != 'true' }}
+    # always() so a best-effort cuda13 leg failing (continue-on-error) can never
+    # skip assembly via needs-propagation: this job's own symbol gate enforces
+    # the 5-mandatory-DLL floor, so correctness doesn't depend on the windows
+    # job's aggregate result. (A genuinely missing MANDATORY variant still fails
+    # here at the `-lt 5` check, which keeps the release from publishing.)
+    if: ${{ always() && needs.setup.outputs.run_windows == 'true' && needs.setup.outputs.skip != 'true' }}
     runs-on: windows-latest
     defaults:
       run:
@@ -520,7 +539,13 @@ jobs:
           $ErrorActionPreference = "Stop"
           $expected = Get-Content lib/expected-symbols.txt | Where-Object { $_.Trim() -ne "" } | ForEach-Object { $_.Trim() }
           $dlls = Get-ChildItem -Path stage -Recurse -Filter "stable-diffusion.dll"
-          if ($dlls.Count -lt 6) { throw "expected 6 Windows variant DLLs, found $($dlls.Count)" }
+          # Require each mandatory variant's DLL by subdir name (a bare count can
+          # be fooled: the best-effort cuda13 leg succeeding while a mandatory leg
+          # fails still yields 5 DLLs). cuda13 is optional (continue-on-error).
+          $mandatory = @("avx2", "avx512", "avx", "noavx", "vulkan")
+          $present = $dlls | ForEach-Object { Split-Path (Split-Path $_.FullName -Parent) -Leaf }
+          $missing = $mandatory | Where-Object { $present -notcontains $_ }
+          if ($missing) { throw "missing mandatory Windows variant DLL(s): $($missing -join ', ')" }
           $fail = $false
           $dlls | ForEach-Object {
             $dll = $_.FullName
@@ -604,7 +629,7 @@ jobs:
 
           CUDA archives require a matching host CUDA runtime; Vulkan archives require
           a Vulkan loader/ICD on the host. The Windows archive carries the per-CPU/GPU
-          (avx2/avx512/avx/noavx/vulkan/cuda12) subdir tree the binding selects from.
+          (avx2/avx512/avx/noavx/vulkan/cuda13) subdir tree the binding selects from.
           EOF
           )"
           # Splice in the merged PR's description so authored release notes reach
