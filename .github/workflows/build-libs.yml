@@ -514,7 +514,12 @@ jobs:
   # ---------------------------------------------------------------------------
   windows_assemble:
     needs: [setup, windows]
-    if: ${{ needs.setup.outputs.run_windows == 'true' && needs.setup.outputs.skip != 'true' }}
+    # always() so a best-effort cuda13 leg failing (continue-on-error) can never
+    # skip assembly via needs-propagation: this job's own symbol gate enforces
+    # the 5-mandatory-DLL floor, so correctness doesn't depend on the windows
+    # job's aggregate result. (A genuinely missing MANDATORY variant still fails
+    # here at the `-lt 5` check, which keeps the release from publishing.)
+    if: ${{ always() && needs.setup.outputs.run_windows == 'true' && needs.setup.outputs.skip != 'true' }}
     runs-on: windows-latest
     defaults:
       run:
