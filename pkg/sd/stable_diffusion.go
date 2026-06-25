@@ -1,6 +1,7 @@
 package sd
 
 import (
+	"runtime"
 	"unsafe"
 )
 
@@ -410,10 +411,31 @@ type UpscalerContext struct {
 	ptr unsafe.Pointer
 }
 
-// Define callback function types
-type SDLogCallback func(level SDLogLevel, text *uint8, data unsafe.Pointer)
-type SDProgressCallback func(step int32, steps int32, time float32, data unsafe.Pointer)
-type SDPreviewCallback func(step int32, frameCount int32, frames *SDImage, isNoisy bool, data unsafe.Pointer)
+// Define callback function types.
+//
+// These mirror the C signatures, which are `void (*)(...)`. They are
+// nonetheless declared to return uintptr because purego turns a Go func
+// passed as a C callback into a machine callback via purego.NewCallback,
+// and on Windows purego delegates to syscall.NewCallback ->
+// runtime.compileCallback, which REQUIRES the callback return exactly one
+// uintptr-sized result. A void Go callback panics there with
+// "compileCallback: expected function with one uintptr-sized result"
+// (the symptom seen during stable-diffusion image generation on Windows).
+// The C caller declares these as void and simply ignores the returned
+// register, so always returning 0 is safe on every platform. (This is the
+// same shape used for ggml's log callback shim elsewhere in the ecosystem.)
+type SDLogCallback func(level SDLogLevel, text *uint8, data unsafe.Pointer) uintptr
+
+// SDProgressCallback NOTE (Windows): this callback takes a float32 argument.
+// purego's callback support on Windows is syscall.NewCallback, which supports
+// neither float arguments nor float returns — so this callback cannot be
+// wrapped on Windows. SetProgressCallback handles that gracefully (it skips
+// registration on Windows rather than panicking), so progress reporting is
+// simply unavailable there. The log and preview callbacks have no float in
+// their signatures and work on every platform. Lifting this would require
+// removing the float from the C-ABI signature.
+type SDProgressCallback func(step int32, steps int32, time float32, data unsafe.Pointer) uintptr
+type SDPreviewCallback func(step int32, frameCount int32, frames *SDImage, isNoisy bool, data unsafe.Pointer) uintptr
 
 // Dynamic library function declarations
 var (
@@ -482,23 +504,42 @@ func SetLogCallback(cb SDLogCallbackType, data interface{}) {
 		return
 	}
 
-	// Create a closure to convert Go callback to C callback
-	cCallback := func(level SDLogLevel, text *uint8, cData unsafe.Pointer) {
+	// Create a closure to convert Go callback to C callback. It returns
+	// uintptr (always 0) so purego.NewCallback accepts it on Windows; see
+	// the SDLogCallback type comment.
+	cCallback := func(level SDLogLevel, text *uint8, cData unsafe.Pointer) uintptr {
 		cb(SDLogLevelType(level), CGoString(text), data)
+		return 0
 	}
 
 	sdSetLogCallback(cCallback, nil)
 }
 
-// SetProgressCallback sets progress callback
+// SetProgressCallback sets progress callback.
+//
+// Windows limitation (handled gracefully): the C progress callback takes a
+// `float` argument, and Windows' syscall.NewCallback — which purego uses to
+// turn a Go func into a C callback there — supports neither float arguments
+// nor float returns. Registering a progress callback on Windows would panic
+// ("float arguments not supported"). Rather than leave that as a latent crash,
+// SetProgressCallback is a no-op for a non-nil cb on Windows: progress
+// reporting is simply unavailable there. Clearing (cb == nil) still works on
+// every platform. The log and preview callbacks have no float in their
+// signatures and work everywhere.
 func SetProgressCallback(cb func(step int, steps int, time float32, data interface{}), data interface{}) {
 	if cb == nil {
 		sdSetProgressCallback(nil, nil)
 		return
 	}
+	if runtime.GOOS == "windows" {
+		// Can't wrap a float-arg callback on Windows; skip registration
+		// instead of panicking. (See the doc comment above.)
+		return
+	}
 
-	cCallback := func(step int32, steps int32, time float32, cData unsafe.Pointer) {
+	cCallback := func(step int32, steps int32, time float32, cData unsafe.Pointer) uintptr {
 		cb(int(step), int(steps), time, data)
+		return 0
 	}
 
 	sdSetProgressCallback(cCallback, nil)
@@ -511,13 +552,14 @@ func SetPreviewCallback(cb func(step int, frameCount int, frames []SDImage, isNo
 		return
 	}
 
-	cCallback := func(step int32, frameCount int32, cFrames *SDImage, isNoisy bool, cData unsafe.Pointer) {
+	cCallback := func(step int32, frameCount int32, cFrames *SDImage, isNoisy bool, cData unsafe.Pointer) uintptr {
 		// Convert C pointer to Go slice
 		frames := make([]SDImage, frameCount)
 		for i := range frames {
 			frames[i] = *(*SDImage)(unsafe.Add(unsafe.Pointer(cFrames), uintptr(i)*unsafe.Sizeof(SDImage{})))
 		}
 		cb(int(step), int(frameCount), frames, isNoisy, data)
+		return 0
 	}
 
 	sdSetPreviewCallback(cCallback, mode, int32(interval), denoised, noisy, nil)

@@ -47,3 +47,23 @@ jobs:
 
       - name: cross-compile (darwin/arm64)
         run: GOOS=darwin GOARCH=arm64 go build ./...
+
+  # Run the pure-Go tests on a real Windows runner. Cross-compiling above only
+  # proves the package builds; it does NOT exercise purego.NewCallback, which on
+  # Windows delegates to syscall.NewCallback -> runtime.compileCallback. A
+  # void-returning C-ABI callback panics there at runtime ("expected function
+  # with one uintptr-sized result") — the exact bug that broke image generation
+  # on Windows. callback_test.go reproduces that conversion, so it must run
+  # natively on windows-latest to guard the regression.
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go test
+        run: go test ./...
