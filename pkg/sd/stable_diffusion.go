@@ -424,6 +424,14 @@ type UpscalerContext struct {
 // register, so always returning 0 is safe on every platform. (This is the
 // same shape used for ggml's log callback shim elsewhere in the ecosystem.)
 type SDLogCallback func(level SDLogLevel, text *uint8, data unsafe.Pointer) uintptr
+
+// SDProgressCallback NOTE (Windows): this callback takes a float32 argument.
+// purego's callback support on Windows is syscall.NewCallback, which supports
+// neither float arguments nor float returns — so SetProgressCallback cannot be
+// installed on Windows and will panic ("float arguments not supported") if
+// called there. The log and preview callbacks have no float in their
+// signatures and work on every platform. Lifting this would require removing
+// the float from the C-ABI signature.
 type SDProgressCallback func(step int32, steps int32, time float32, data unsafe.Pointer) uintptr
 type SDPreviewCallback func(step int32, frameCount int32, frames *SDImage, isNoisy bool, data unsafe.Pointer) uintptr
 
