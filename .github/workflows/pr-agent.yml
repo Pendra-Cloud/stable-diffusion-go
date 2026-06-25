@@ -26,22 +26,45 @@ jobs:
     steps:
       - name: PR Agent
         # Pinned to the SHA of v0.36.0 (2026-06-01) — third-party action, SHA-pin for supply-chain safety.
-        uses: the-pr-agent/pr-agent@ffe1f89a4dafc7d8e88b9cf010a3233e30b49f43 # v0.36.0
+        uses: the-pr-agent/pr-agent@e639d10a4df023b90668ec35796c2457c5f5db8d # v0.36.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # --- Pendra OpenAI-compatible inference ---
-          # litellm strips the `openai/` prefix and POSTs model `qwen3.6:27b` to OPENAI.API_BASE.
+          # litellm strips the `openai/` prefix and POSTs the bare model to OPENAI.API_BASE.
+          # Model + token ceiling come from repo variables (Settings → Variables) so the
+          # review model can be swapped without editing this workflow. Currently
+          # PR_AGENT_MODEL=openai/qwen3-coder:30b, PR_AGENT_MODEL_MAX_TOKENS=262144.
           OPENAI.KEY: ${{ secrets.PENDRA_API_KEY }}
           OPENAI.API_BASE: "https://api.pendra.ai/api/v1"
-          config.model: "openai/qwen3.6:27b"
-          config.fallback_models: '["openai/qwen3.6:27b"]'
-          # qwen3.6:27b is a reasoning model; single calls can run several minutes.
-          # Raise the default 120s ceiling so review/improve calls aren't cut short.
+          config.model: ${{ vars.PR_AGENT_MODEL }}
+          config.fallback_models: '["${{ vars.PR_AGENT_MODEL }}"]'
+          # The configured model is a slow reasoning model; single calls can run several
+          # minutes. Raise the default 120s ceiling so review/improve calls aren't cut short.
           config.ai_timeout: "600"
-          # Required for a model litellm doesn't natively know; mirrors the catalogue context window.
-          config.custom_model_max_tokens: "262144"
-          # Post improve suggestions as inline, committable suggestions on the diff.
-          pr_code_suggestions.commitable_code_suggestions: "true"
+          # Required for a model litellm doesn't natively know; must match the model's context window.
+          config.custom_model_max_tokens: ${{ vars.PR_AGENT_MODEL_MAX_TOKENS }}
+          # --- comment de-duplication (see .claude/rules/github-actions.md → Automated PR Review) ---
+          # Publish /improve as ONE self-updating table comment, not many inline
+          # committable comments. Inline comments can't be edited in place, so on
+          # every push they were re-posted verbatim (qodo-ai/pr-agent#2184). The
+          # table comment honours persistent_comment and is edited in place instead.
+          pr_code_suggestions.commitable_code_suggestions: "false"
+          pr_code_suggestions.persistent_comment: "true"
+          # Drop low-importance suggestions (qodo's recommended floor for noisy repos).
+          pr_code_suggestions.suggestions_score_threshold: "7"
+          # Keep /review on its single persistent guide comment, and stop the
+          # standalone "Persistent review updated to latest commit <sha>" pointer
+          # that was posted once per push (final_update_message — verify on a live
+          # PR; inferred from qodo's reviewer defaults).
+          pr_reviewer.persistent_comment: "true"
+          pr_reviewer.final_update_message: "false"
+          # Incremental-review gating: re-review only after >=2 new commits AND
+          # >=20 min since the last review, so rapid follow-up pushes don't each
+          # trigger a full re-run. We keep "synchronize" in pr_actions below, so
+          # later commits are still covered — just throttled.
+          pr_reviewer.require_all_thresholds_for_incremental_review: "true"
+          pr_reviewer.minimal_commits_for_incremental_review: "2"
+          pr_reviewer.minimal_minutes_for_incremental_review: "20"
           # --- which tools auto-run on each PR into main ---
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "false"
