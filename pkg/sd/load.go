@@ -47,28 +47,71 @@ func libCandidates(libDir string) []string {
 	return []string{filepath.Join(libDir, name)}
 }
 
-// windowsLibCandidates selects GPU-accelerated variant subdirectories within
-// libDir based on the detected GPU, always falling back to the CPU (AVX)
-// variant. The selection logic operates entirely within libDir.
+// Overridable in tests. detectGPUVendor returns "NVIDIA"/"AMD"/"Intel"/"" and
+// vulkanLoaderPresent reports whether a Vulkan ICD is installed; both probe the
+// host in production, so tests swap them to exercise selection deterministically
+// without a GPU or the native library.
+var (
+	detectGPUVendor     = GetGPUName
+	vulkanLoaderPresent = hasVulkanLoader
+)
+
+// windowsLibCandidates returns the ordered list of variant subdirectories to try
+// for libDir, picking a GPU-accelerated build when one is available and always
+// ending with the CPU (AVX) fallback. Load() opens the first candidate whose
+// file exists, so listing a variant that isn't bundled is free — it's simply
+// skipped.
+//
+// Order: vendor-optimal GPU build (cuda13/rocm) → Vulkan (the cross-vendor GPU
+// build bundled for Windows) → CPU micro-arch. Selecting Vulkan for any detected
+// GPU is what makes a clean NVIDIA host — which ships no cuda13 build — run image
+// generation on the GPU instead of silently falling through to CPU.
 func windowsLibCandidates(libDir, name string) []string {
 	var candidates []string
 
-	if strings.ToLower(os.Getenv("SD_VK_DEVICE")) == "true" {
-		if gpu, err := GetVulkanGPU(); err == nil && gpu != "" {
-			candidates = append(candidates, filepath.Join(libDir, "vulkan", name))
-		}
-	} else if gpu, err := GetGPUName(); err == nil {
-		switch gpu {
-		case "NVIDIA":
-			candidates = append(candidates, filepath.Join(libDir, "cuda13", name))
-		case "AMD":
-			candidates = append(candidates, filepath.Join(libDir, "rocm", name))
-		}
+	gpu, _ := detectGPUVendor() // best-effort; "" when detection fails
+
+	// 1. Vendor-optimal GPU builds first (loaded only if actually bundled).
+	switch gpu {
+	case "NVIDIA":
+		candidates = append(candidates, filepath.Join(libDir, "cuda13", name))
+	case "AMD":
+		candidates = append(candidates, filepath.Join(libDir, "rocm", name))
 	}
 
-	// CPU fallback (avx512/avx2/avx/noavx).
+	// 2. Vulkan — the GPU build bundled for Windows. Prefer it over the CPU
+	// fallback whenever a GPU is present and the Vulkan loader is installed.
+	// Detection is by the presence of vulkan-1.dll (installed by every GPU
+	// vendor's Windows driver), NOT the vulkaninfo CLI, which ships only with the
+	// Vulkan SDK. SD_VK_DEVICE=true forces this path on regardless of detection.
+	if vulkanRequested() || (gpu != "" && vulkanLoaderPresent()) {
+		candidates = append(candidates, filepath.Join(libDir, "vulkan", name))
+	}
+
+	// 3. CPU fallback (avx512/avx2/avx/noavx).
 	candidates = append(candidates, filepath.Join(libDir, GetCpuAVX(), name))
 	return candidates
+}
+
+// vulkanRequested reports whether the Vulkan variant was explicitly forced via
+// the SD_VK_DEVICE=true environment override.
+func vulkanRequested() bool {
+	return strings.EqualFold(os.Getenv("SD_VK_DEVICE"), "true")
+}
+
+// hasVulkanLoader reports whether the Vulkan loader (vulkan-1.dll) is present in
+// the Windows system directory. Every GPU vendor's Windows driver (NVIDIA, AMD,
+// Intel) installs it, so its presence means a Vulkan ICD is available to run the
+// Vulkan stable-diffusion build. This is checked instead of the vulkaninfo CLI,
+// which is only shipped with the Vulkan SDK and is absent on a plain
+// driver-only host.
+func hasVulkanLoader() bool {
+	sysDir := os.Getenv("SystemRoot")
+	if sysDir == "" {
+		sysDir = `C:\Windows`
+	}
+	_, err := os.Stat(filepath.Join(sysDir, "System32", "vulkan-1.dll"))
+	return err == nil
 }
 
 // Load resolves and dlopens the stable-diffusion shared library from libDir.
